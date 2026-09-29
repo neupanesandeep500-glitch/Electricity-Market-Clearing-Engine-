@@ -1,6 +1,16 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { SlotClearingResult } from '../types';
-import { BarChart3, TrendingUp, Download, Cpu, AlertCircle, Clock } from 'lucide-react';
+import {
+  BarChart3,
+  TrendingUp,
+  Download,
+  Cpu,
+  AlertCircle,
+  Clock,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+} from 'lucide-react';
 
 interface OverviewTabProps {
   results: Record<number, SlotClearingResult>;
@@ -19,9 +29,20 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   totalSellers = 0,
   onRunCompute,
 }) => {
+  const [chartZoom, setChartZoom] = useState<number>(1);
+  const [hoveredSlot, setHoveredSlot] = useState<number | null>(null);
+
   const slotsList = Array.from({ length: nSlots }, (_, i) => i + 1);
   const hasParticipants = totalBuyers > 0 || totalSellers > 0;
   const isCalculated = hasComputed && hasParticipants;
+
+  // Zoom handlers for overview chart
+  const handleZoomIn = () => setChartZoom((prev) => Math.min(2.5, Number((prev + 0.25).toFixed(2))));
+  const handleZoomOut = () => setChartZoom((prev) => Math.max(1, Number((prev - 0.25).toFixed(2))));
+  const handleResetZoom = () => {
+    setChartZoom(1);
+    setHoveredSlot(null);
+  };
 
   // Compute maximum values for bar scaling
   const maxMcp = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.mcp || 0 : 0)), 10);
@@ -245,9 +266,9 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Trend 1: MCP & MW Volume by Slot - Dual Column Column Chart with Data Labels */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs">
-          <div className="flex items-center justify-between mb-4">
+        {/* Trend 1: MCP & MW Volume by Slot - Dual Column Chart with Dynamic Zoom & Hover */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs relative">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
             <div className="flex items-center gap-2">
               <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
                 <TrendingUp className="w-4 h-4" />
@@ -256,25 +277,86 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                 <h3 className="text-sm font-bold text-slate-900">
                   Market Clearing Price &amp; Dispatched MW
                 </h3>
-                <p className="text-xs text-slate-500">Dual metrics comparison with exact clearing values</p>
+                <p className="text-xs text-slate-500">Dynamic comparison with hover tooltip &amp; zoom</p>
               </div>
             </div>
 
-            {/* Legend */}
-            <div className="flex items-center gap-3 text-[11px] font-semibold">
-              <span className="flex items-center gap-1.5 text-amber-700">
-                <span className="w-3 h-3 rounded-md bg-amber-500 shadow-2xs"></span> MCP (NRs/kWh)
-              </span>
-              <span className="flex items-center gap-1.5 text-blue-700">
-                <span className="w-3 h-3 rounded-md bg-blue-600 shadow-2xs"></span> Dispatched (MW)
-              </span>
+            {/* Zoom Controls & Legends */}
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <div className="flex items-center gap-2 text-[11px] font-semibold">
+                <span className="flex items-center gap-1.5 text-amber-700">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-500"></span> MCP
+                </span>
+                <span className="flex items-center gap-1.5 text-blue-700">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-blue-600"></span> MW
+                </span>
+              </div>
+
+              {/* Zoom Toolbar */}
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-xs">
+                <span className="px-1.5 font-mono font-bold text-slate-700 text-[10px]">
+                  {Math.round(chartZoom * 100)}%
+                </span>
+                <button
+                  onClick={handleZoomIn}
+                  disabled={chartZoom >= 2.5}
+                  className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                  title="Zoom In (+25%)"
+                >
+                  <ZoomIn className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={handleZoomOut}
+                  disabled={chartZoom <= 1}
+                  className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                  title="Zoom Out (-25%)"
+                >
+                  <ZoomOut className="w-3 h-3" />
+                </button>
+                {chartZoom > 1 && (
+                  <button
+                    onClick={handleResetZoom}
+                    className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 cursor-pointer shadow-2xs"
+                    title="Reset Zoom"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
+
+          {/* Dynamic Hover Tooltip Card */}
+          {hoveredSlot !== null && results[hoveredSlot] && (
+            <div className="absolute top-14 right-6 z-20 bg-slate-900/90 text-white backdrop-blur-md rounded-xl p-2.5 shadow-xl border border-slate-700 text-xs font-mono space-y-0.5 pointer-events-none animate-in fade-in duration-100">
+              <div className="text-[10px] text-amber-400 font-sans font-bold flex items-center justify-between">
+                <span>Slot T{hoveredSlot} Clearing</span>
+                <span>{results[hoveredSlot].status}</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-300 font-sans">Price (MCP):</span>
+                <strong className="text-amber-300">NRs {results[hoveredSlot].mcp.toFixed(3)}/kWh</strong>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-300 font-sans">Volume (MCV):</span>
+                <strong className="text-blue-300">{results[hoveredSlot].mcv_mw.toFixed(2)} MW</strong>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-slate-300 font-sans">Turnover:</span>
+                <strong className="text-emerald-300">NRs {Math.round(results[hoveredSlot].market_value).toLocaleString('en-US')}</strong>
+              </div>
+            </div>
+          )}
 
           {/* SVG Grouped Column Chart with Explicit Data Labels right on top of bars */}
           <div className="pt-2">
             <div className="relative w-full overflow-x-auto">
-              <svg viewBox="0 0 520 220" className="w-full h-auto min-w-[420px] select-none">
+              <svg
+                viewBox="0 0 520 220"
+                className="w-full h-auto min-w-[420px] select-none transition-transform duration-200"
+                style={{ transform: `scale(${chartZoom})`, transformOrigin: 'bottom center' }}
+                onMouseLeave={() => setHoveredSlot(null)}
+              >
                 {/* Horizontal guide lines */}
                 {[0.25, 0.5, 0.75, 1].map((pct, i) => (
                   <line
@@ -316,7 +398,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                   const mwY = 180 - mwHeight;
 
                   return (
-                    <g key={s} className="group">
+                    <g
+                      key={s}
+                      className="group cursor-pointer"
+                      onMouseEnter={() => setHoveredSlot(s)}
+                    >
                       {/* Slot boundary background highlight */}
                       <rect
                         x={slotCenterX - slotWidth / 2 + 4}

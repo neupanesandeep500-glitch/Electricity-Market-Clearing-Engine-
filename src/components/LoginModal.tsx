@@ -10,8 +10,8 @@ interface LoginModalProps {
 
 export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }) => {
   const [selectedRole, setSelectedRole] = useState<UserRole>('ADMIN');
-  const [email, setEmail] = useState('neupanesandeep500@gmaail.com');
-  const [password, setPassword] = useState('Sarthvik@30');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -20,13 +20,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
   const handleRoleTab = (role: UserRole) => {
     setSelectedRole(role);
     setError(null);
-    if (role === 'ADMIN') {
-      setEmail('neupanesandeep500@gmaail.com');
-      setPassword('Sarthvik@30');
-    } else {
-      setEmail('jeevan.umh@gmail.com');
-      setPassword('Users123');
-    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -140,30 +133,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full py-3 px-4 bg-gradient-to-r from-indigo-900 to-blue-800 hover:from-indigo-800 hover:to-blue-700 text-white font-extrabold rounded-xl shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 mt-2 disabled:opacity-50"
+              className="w-full py-3 px-4 bg-gradient-to-r from-indigo-900 to-blue-800 hover:from-indigo-800 hover:to-blue-700 text-white font-extrabold rounded-xl shadow-md transition-all active:scale-[0.98] flex items-center justify-center gap-2 mt-2 disabled:opacity-50 cursor-pointer"
             >
               <span>{isLoading ? 'Verifying Credentials...' : `Sign in as ${selectedRole}`}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
-
-          {/* Preset Helper Guide */}
-          <div className="mt-5 p-3.5 bg-slate-50 border border-slate-200/80 rounded-2xl text-[11px] text-slate-600 space-y-1.5">
-            <div className="flex items-center gap-1.5 font-bold text-slate-800">
-              <Info className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-              <span>System Pre-configured Credentials:</span>
-            </div>
-            <div className="font-mono text-[10px] space-y-0.5 pl-5">
-              <div>
-                <strong className="text-amber-800 font-sans">ADMIN:</strong> neupanesandeep500@gmaail.com /{' '}
-                <span className="bg-slate-200 px-1 py-0.5 rounded">Sarthvik@30</span>
-              </div>
-              <div>
-                <strong className="text-blue-800 font-sans">USER:</strong> jeevan.umh@gmail.com /{' '}
-                <span className="bg-slate-200 px-1 py-0.5 rounded">Users123</span>
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Footer Note */}

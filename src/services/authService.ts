@@ -177,11 +177,63 @@ export function createNewUser(
 }
 
 /**
- * Admin: Delete a user account (cannot delete built-in accounts)
+ * Admin: Modify/Edit an existing user account
+ */
+export function updateUser(
+  creator: UserAccount,
+  userId: string,
+  data: { email?: string; name?: string; role?: UserRole; password?: string }
+): { success: boolean; error?: string; user?: UserAccount } {
+  if (creator.role !== 'ADMIN') {
+    return { success: false, error: 'Unauthorized: Only an ADMIN can modify user accounts.' };
+  }
+
+  const existing = getStoredUsers();
+  const index = existing.findIndex((u) => u.id === userId);
+
+  if (index === -1) {
+    return { success: false, error: 'User not found in system.' };
+  }
+
+  const current = existing[index];
+
+  if (data.email) {
+    const cleanEmail = data.email.trim().toLowerCase();
+    if (!cleanEmail.includes('@')) {
+      return { success: false, error: 'Invalid email address provided.' };
+    }
+    // Check duplicate
+    const dup = existing.find((u) => u.id !== userId && u.email.toLowerCase() === cleanEmail);
+    if (dup) {
+      return { success: false, error: 'Another account is already registered with this email address.' };
+    }
+  }
+
+  const updatedUser: UserAccount = {
+    ...current,
+    name: data.name ? data.name.trim() : current.name,
+    email: data.email ? data.email.trim().toLowerCase() : current.email,
+    role: data.role || current.role,
+    password: data.password && data.password.trim().length >= 4 ? data.password.trim() : current.password,
+  };
+
+  const updatedList = [...existing];
+  updatedList[index] = updatedUser;
+  localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updatedList));
+
+  return { success: true, user: updatedUser };
+}
+
+/**
+ * Admin: Delete a user account (Admin can delete any other user)
  */
 export function deleteUser(creator: UserAccount, userId: string): { success: boolean; error?: string } {
   if (creator.role !== 'ADMIN') {
     return { success: false, error: 'Unauthorized: Only an ADMIN can remove user accounts.' };
+  }
+
+  if (creator.id === userId) {
+    return { success: false, error: 'Cannot delete your own active administrator account.' };
   }
 
   const existing = getStoredUsers();
@@ -189,10 +241,6 @@ export function deleteUser(creator: UserAccount, userId: string): { success: boo
 
   if (!target) {
     return { success: false, error: 'User not found.' };
-  }
-
-  if (target.isSystemUser || target.email.toLowerCase() === INBUILT_ADMIN.email.toLowerCase()) {
-    return { success: false, error: 'Built-in administrative and core accounts cannot be deleted.' };
   }
 
   const filtered = existing.filter((u) => u.id !== userId);

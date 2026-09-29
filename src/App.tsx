@@ -150,30 +150,41 @@ export default function App() {
   );
 
   // Fetch from Google Sheet (If no valid bids/offers found, shows nothing / --)
-  const handleSync = useCallback(async () => {
-    setIsSyncing(true);
-    setError(null);
-    try {
-      const { csv, source } = await fetchSheetCSV({
-        sheetId: config.sheetId,
-        sheetName: config.sheetName,
-      });
+  const handleSync = useCallback(
+    async (isAuto = false) => {
+      // If user manually clicks refresh while results are already computed, confirm intent
+      if (!isAuto && hasComputed) {
+        const proceed = window.confirm(
+          'Market clearing results are currently computed and displayed. Refreshing now will pull new bids and reset the engine to the intake state. Do you want to proceed?'
+        );
+        if (!proceed) return;
+      }
 
-      processCSVData(csv, 'google-sheets');
-    } catch (err: any) {
-      console.warn('Google Sheet fetch error:', err.message);
-      // DO NOT fallback to demo data! If no valid data, keep system empty (--)
-      setBuyers([]);
-      setSellers([]);
-      setResults({});
-      setSettlementRecords([]);
-      setParticipantSummaries([]);
-      setHasComputed(false);
-      setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [config.sheetId, config.sheetName, processCSVData]);
+      setIsSyncing(true);
+      setError(null);
+      try {
+        const { csv } = await fetchSheetCSV({
+          sheetId: config.sheetId,
+          sheetName: config.sheetName,
+        });
+
+        processCSVData(csv, 'google-sheets');
+      } catch (err: any) {
+        console.warn('Google Sheet fetch error:', err.message);
+        // DO NOT fallback to demo data! If no valid data, keep system empty (--)
+        setBuyers([]);
+        setSellers([]);
+        setResults({});
+        setSettlementRecords([]);
+        setParticipantSummaries([]);
+        setHasComputed(false);
+        setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [config.sheetId, config.sheetName, processCSVData, hasComputed]
+  );
 
   // Explicitly run computation to simulate market clearing results
   const handleCompute = useCallback(() => {
@@ -200,19 +211,21 @@ export default function App() {
 
   // Initial load
   useEffect(() => {
-    handleSync();
+    handleSync(true);
   }, [handleSync]);
 
-  // Polling Interval
+  // Polling Interval: Auto-sync during intake before computation.
+  // Once computation is done, do NOT auto-refresh the system so users can analyze data undisturbed!
   useEffect(() => {
     if (!config.autoSync || config.syncIntervalSec <= 0) return;
+    if (hasComputed) return;
 
     const timer = setInterval(() => {
-      handleSync();
+      handleSync(true);
     }, config.syncIntervalSec * 1000);
 
     return () => clearInterval(timer);
-  }, [config.autoSync, config.syncIntervalSec, handleSync]);
+  }, [config.autoSync, config.syncIntervalSec, handleSync, hasComputed]);
 
   // Download Standalone HTML
   const handleDownloadStandalone = () => {
@@ -234,7 +247,7 @@ export default function App() {
         onOpenQR={() => setIsQRModalOpen(true)}
         onOpenSettings={() => setIsSettingsModalOpen(true)}
         onOpenUserManagement={() => setIsUserManagementModalOpen(true)}
-        onSync={handleSync}
+        onSync={() => handleSync(false)}
         onDownloadStandalone={handleDownloadStandalone}
         onLogout={handleLogout}
         currentUser={currentUser || { id: 'guest', email: 'guest@system.local', name: 'Guest User', role: 'USERS', createdAt: '' }}
@@ -247,42 +260,57 @@ export default function App() {
 
       {/* Main Viewport Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-        {/* Mobile/Quick Form QR Callout Banner */}
+        {/* Closed Auction Live Session Status Banner (Single Place QR is in Header) */}
         <section className="bg-gradient-to-r from-white via-indigo-50/40 to-white border border-indigo-100/80 rounded-2xl p-4 sm:p-5 mb-5 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-xl bg-indigo-900 text-white flex items-center justify-center shrink-0 shadow-sm">
-              <QrCode className="w-6 h-6 text-amber-400" />
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-xl bg-indigo-900 text-white flex items-center justify-center shrink-0 shadow-sm font-bold">
+              <Cpu className="w-6 h-6 text-amber-400" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-indigo-700 uppercase tracking-wider">
-                  Participant Live Onboarding
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-extrabold text-indigo-700 bg-indigo-100/80 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  {hasComputed ? 'Clearing Solved' : 'Closed Auction Intake'}
                 </span>
                 <span className="text-slate-300">·</span>
-                <span className="text-xs text-slate-500">Market Bids &amp; Offers</span>
+                <span className="text-xs text-slate-500 font-medium">
+                  {buyers.length === 0 && sellers.length === 0
+                    ? 'No valid bids or offers in sheet'
+                    : hasComputed
+                    ? `${participantSummaries.length} Participants Cleared · Auto-refresh Paused for Analysis`
+                    : `${buyers.length} Buyer Bids & ${sellers.length} Seller Offers Received (Sealed)`}
+                </span>
               </div>
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight">
-                Scan QR Code to submit Bids (Buyers) or Generation Offers (Sellers)
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight mt-0.5">
+                {buyers.length === 0 && sellers.length === 0
+                  ? 'Sheet Empty: Awaiting participant bid submissions via Google Form'
+                  : hasComputed
+                  ? 'Market Clearing Solved: Results locked for participant dispatch analysis'
+                  : 'Bids & Offers Intake Active: Submit bids, then click Compute to solve clearing'}
               </h2>
             </div>
           </div>
 
           <div className="flex items-center gap-2 w-full md:w-auto">
-            <button
-              onClick={() => setIsQRModalOpen(true)}
-              className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-indigo-900 hover:bg-indigo-800 text-white transition-colors shadow-xs cursor-pointer"
-            >
-              <QrCode className="w-4 h-4 text-amber-400" />
-              <span>Display QR Code</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('compute')}
-              className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs cursor-pointer"
-            >
-              <Cpu className="w-4 h-4" />
-              <span>Compute Market</span>
-            </button>
+            {!hasComputed ? (
+              <button
+                onClick={() => {
+                  setActiveTab('compute');
+                  handleCompute();
+                }}
+                disabled={buyers.length === 0 && sellers.length === 0}
+                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                <Cpu className="w-4 h-4" />
+                <span>Compute Market</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => handleSync(false)}
+                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 transition-colors shadow-xs cursor-pointer"
+              >
+                <span>Re-open Intake</span>
+              </button>
+            )}
           </div>
         </section>
 
