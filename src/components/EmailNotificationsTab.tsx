@@ -19,7 +19,9 @@ interface EmailNotificationsTabProps {
   results: Record<number, SlotClearingResult>;
   nSlots: number;
   sessionLabel: string;
+  hasComputed?: boolean;
   onPreviewEmail: (participant: ParticipantSummaryItem) => void;
+  onRunCompute?: () => void;
 }
 
 export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
@@ -29,7 +31,9 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   results,
   nSlots,
   sessionLabel,
+  hasComputed = false,
   onPreviewEmail,
+  onRunCompute,
 }) => {
   const [logs, setLogs] = useState<EmailLogEntry[]>([]);
   const [isSending, setIsSending] = useState(false);
@@ -38,11 +42,19 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   const [senderEmail, setSenderEmail] = useState('');
   const [appPassword, setAppPassword] = useState('');
 
-  const clearedCount = Object.values(results).filter((r) => r && r.status === 'Cleared').length;
-  const withEmailCount = participantSummaries.filter((p) => p.email && p.email.includes('@')).length;
-  const withoutEmailCount = participantSummaries.length - withEmailCount;
+  const hasParticipants = buyers.length > 0 || sellers.length > 0;
+  const isCalculated = hasComputed && participantSummaries.length > 0;
+
+  const clearedCount = isCalculated ? Object.values(results).filter((r) => r && r.status === 'Cleared').length : 0;
+  const withEmailCount = isCalculated ? participantSummaries.filter((p) => p.email && p.email.includes('@')).length : 0;
+  const withoutEmailCount = isCalculated ? participantSummaries.length - withEmailCount : 0;
 
   const handleSendBatch = async (dryRun = false) => {
+    if (!hasComputed) {
+      alert('Please run the market clearing computation in the Compute tab first.');
+      return;
+    }
+
     setIsSending(true);
     setStatusMessage(dryRun ? 'Running dry-run simulation...' : 'Dispatching notifications via SMTP...');
 

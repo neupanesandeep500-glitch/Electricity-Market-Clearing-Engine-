@@ -39,6 +39,7 @@ interface ComputeTabProps {
   participantSummaries: ParticipantSummaryItem[];
   diagnostics: DiagnosticsData;
   sessionLabel: string;
+  hasComputed: boolean;
   onRecompute: () => void;
   onViewOverview: () => void;
   onViewSettlement: () => void;
@@ -55,6 +56,7 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
   participantSummaries,
   diagnostics,
   sessionLabel,
+  hasComputed,
   onRecompute,
   onViewOverview,
   onViewSettlement,
@@ -62,11 +64,12 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
   lastSyncTime,
 }) => {
   const [isComputing, setIsComputing] = useState(false);
-  const [hasComputed, setHasComputed] = useState(true);
   const [computationLog, setComputationLog] = useState<string[]>([
     `[${new Date().toLocaleTimeString()}] Engine core loaded: Optimal nodal market clearing algorithms initialized.`,
-    `[${new Date().toLocaleTimeString()}] Active bidding matrix: ${buyers.length} buyer bids and ${sellers.length} seller offers loaded across ${nSlots} time slots.`,
-    `[${new Date().toLocaleTimeString()}] Ready to execute nodal clearing calculation.`,
+    `[${new Date().toLocaleTimeString()}] Active intake buffer: ${buyers.length} buyer bids and ${sellers.length} seller offers received across ${nSlots} time slots.`,
+    hasComputed
+      ? `[${new Date().toLocaleTimeString()}] Clearing status: Solved. Optimal prices and dispatch results are published.`
+      : `[${new Date().toLocaleTimeString()}] Clearing status: Pending computation. Click 'Execute Market Clearing Engine' to simulate final results.`,
   ]);
 
   // Dispatch state
@@ -77,16 +80,23 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
   const [senderEmail, setSenderEmail] = useState('');
   const [appPassword, setAppPassword] = useState('');
 
+  const hasParticipants = buyers.length > 0 || sellers.length > 0;
   const slotsList = Array.from({ length: nSlots }, (_, i) => i + 1);
-  const clearedSlots = slotsList.filter((s) => results[s]?.status === 'Cleared');
-  const totalClearedMw = slotsList.reduce((acc, s) => acc + (results[s]?.mcv_mw || 0), 0);
-  const totalMarketValue = slotsList.reduce((acc, s) => acc + (results[s]?.market_value || 0), 0);
+  const clearedSlots = hasComputed ? slotsList.filter((s) => results[s]?.status === 'Cleared') : [];
+  const totalClearedMw = hasComputed ? slotsList.reduce((acc, s) => acc + (results[s]?.mcv_mw || 0), 0) : 0;
+  const totalMarketValue = hasComputed ? slotsList.reduce((acc, s) => acc + (results[s]?.market_value || 0), 0) : 0;
 
   // Trigger manual simulation run
   const handleExecuteCompute = () => {
+    if (!hasParticipants) {
+      alert('Cannot run computation: No valid bids or offers are loaded from the sheet.');
+      return;
+    }
+
     setIsComputing(true);
     const newLogs: string[] = [
       `[${new Date().toLocaleTimeString()}] 🚀 Initiating Market Clearing Engine execution...`,
+      `[${new Date().toLocaleTimeString()}] Ingested ${buyers.length} buyer bids and ${sellers.length} seller offers across ${nSlots} slots.`,
       `[${new Date().toLocaleTimeString()}] Formulating piecewise-linear step demand and supply curves across ${nSlots} slots.`,
       `[${new Date().toLocaleTimeString()}] Applying merit-order sorting: ascending for generation offers, descending for demand bids.`,
       `[${new Date().toLocaleTimeString()}] Running binary-search equilibrium solver for Market Clearing Price (MCP) & Volume (MCV)...`,
@@ -94,14 +104,11 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
 
     setTimeout(() => {
       onRecompute();
-      newLogs.push(`[${new Date().toLocaleTimeString()}] Solved slot clearing: ${clearedSlots.length} of ${nSlots} slots successfully cleared.`);
-      newLogs.push(`[${new Date().toLocaleTimeString()}] Balanced dispatch: ${totalClearedMw.toFixed(2)} MW capacity allocated.`);
-      newLogs.push(`[${new Date().toLocaleTimeString()}] Total financial clearing volume calculated: NRs ${Math.round(totalMarketValue).toLocaleString('en-US')}.`);
-      newLogs.push(`[${new Date().toLocaleTimeString()}] Settlement register & participant drawl/dispatch summaries regenerated.`);
-      newLogs.push(`[${new Date().toLocaleTimeString()}] ✅ Market simulation completed successfully. Ready for email notification dispatch.`);
+      newLogs.push(`[${new Date().toLocaleTimeString()}] Solved slot clearing: Market equilibrium determined.`);
+      newLogs.push(`[${new Date().toLocaleTimeString()}] Settlement register & participant drawl/dispatch summaries calculated.`);
+      newLogs.push(`[${new Date().toLocaleTimeString()}] ✅ Market simulation completed successfully. Final results, curves, and email notices are now active.`);
       setComputationLog(newLogs);
       setIsComputing(false);
-      setHasComputed(true);
     }, 600);
   };
 
@@ -190,16 +197,24 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto shrink-0">
               <button
                 onClick={handleExecuteCompute}
-                disabled={isComputing}
+                disabled={isComputing || !hasParticipants}
                 className="flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-2xl bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 text-slate-950 font-black text-sm tracking-wide shadow-lg shadow-amber-500/30 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
               >
                 <Cpu className={`w-5 h-5 ${isComputing ? 'animate-spin' : ''}`} />
-                <span>{isComputing ? 'Computing Equilibrium...' : 'Compute & Simulate'}</span>
+                <span>
+                  {isComputing
+                    ? 'Computing Equilibrium...'
+                    : !hasParticipants
+                    ? 'No Bids/Offers in Sheet'
+                    : hasComputed
+                    ? 'Re-run Market Clearing'
+                    : 'Execute Engine & Simulate'}
+                </span>
               </button>
 
               <button
                 onClick={() => handleDispatchEmails(false)}
-                disabled={!hasComputed || isSendingEmails}
+                disabled={!hasComputed || isSendingEmails || !hasParticipants}
                 className="flex items-center justify-center gap-2 px-5 py-3.5 rounded-2xl bg-white/15 hover:bg-white/25 text-white font-bold text-sm backdrop-blur-md border border-white/20 transition-all active:scale-95 disabled:opacity-40 cursor-pointer"
                 title="Only dispatches after computation is completed"
               >
@@ -213,13 +228,15 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-6 border-t border-white/10">
             <div className="bg-white/5 backdrop-blur-xs rounded-xl p-3 border border-white/5">
               <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-200 block mb-0.5">
-                Market Participants
+                Intake Received
               </span>
               <div className="text-lg font-black font-mono text-white">
-                {participantSummaries.length}
+                {hasParticipants ? `${buyers.length + sellers.length} Submissions` : '—'}
               </div>
               <span className="text-[10px] text-indigo-200/70">
-                {new Set(buyers.map((b) => b.name)).size} Buyers · {new Set(sellers.map((s) => s.name)).size} Sellers
+                {hasParticipants
+                  ? `${buyers.length} Bids · ${sellers.length} Offers`
+                  : 'No bids or offers found'}
               </span>
             </div>
 
@@ -230,8 +247,8 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
               <div className="text-lg font-black font-mono text-white">
                 {nSlots} Slots
               </div>
-              <span className="text-[10px] text-emerald-300 font-semibold">
-                {clearedSlots.length} of {nSlots} Cleared
+              <span className={`text-[10px] font-semibold ${hasComputed ? 'text-emerald-300' : 'text-amber-300'}`}>
+                {hasComputed ? `${clearedSlots.length} of ${nSlots} Cleared` : 'Pending Computation'}
               </span>
             </div>
 
@@ -240,10 +257,10 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
                 Total Cleared Capacity
               </span>
               <div className="text-lg font-black font-mono text-amber-300">
-                {totalClearedMw.toFixed(1)} MW
+                {hasComputed && totalClearedMw > 0 ? `${totalClearedMw.toFixed(1)} MW` : '—'}
               </div>
               <span className="text-[10px] text-indigo-200/70">
-                {(totalClearedMw * 0.25).toFixed(2)} MWh energy
+                {hasComputed && totalClearedMw > 0 ? `${(totalClearedMw * 0.25).toFixed(2)} MWh energy` : 'Awaiting compute'}
               </span>
             </div>
 
@@ -252,10 +269,10 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
                 Financial Volume
               </span>
               <div className="text-lg font-black font-mono text-emerald-300">
-                NRs {Math.round(totalMarketValue).toLocaleString('en-US')}
+                {hasComputed && totalMarketValue > 0 ? `NRs ${Math.round(totalMarketValue).toLocaleString('en-US')}` : '—'}
               </div>
               <span className="text-[10px] text-indigo-200/70">
-                Total clearing value
+                {hasComputed ? 'Total financial volume' : 'Awaiting compute'}
               </span>
             </div>
           </div>

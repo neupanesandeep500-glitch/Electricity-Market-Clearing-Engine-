@@ -69,6 +69,7 @@ export default function App() {
   const [sellers, setSellers] = useState<RawBidOfferRecord[]>([]);
   const [nSlots, setNSlots] = useState<number>(DEFAULT_FALLBACK_SLOTS);
   const [results, setResults] = useState<Record<number, SlotClearingResult>>({});
+  const [hasComputed, setHasComputed] = useState<boolean>(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsData>({
     rows_seen: 0,
     rows_skipped_no_role: 0,
@@ -95,7 +96,7 @@ export default function App() {
   >('compute');
   const [isSyncing, setIsSyncing] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-  const [sourceType, setSourceType] = useState<'google-sheets' | 'demo' | 'csv-upload'>('demo');
+  const [sourceType, setSourceType] = useState<'google-sheets' | 'demo' | 'csv-upload'>('google-sheets');
   const [error, setError] = useState<string | null>(null);
 
   // Modals & Auth
@@ -114,39 +115,41 @@ export default function App() {
     setCurrentUser(null);
   };
 
-  // Process raw CSV through market clearing engine
+  // Process raw CSV intake data (refreshes intake; does NOT auto-compute clearing results)
   const processCSVData = useCallback(
     (csvText: string, source: 'google-sheets' | 'demo' | 'csv-upload') => {
       try {
         const { buyers: parsedBuyers, sellers: parsedSellers, diagnostics: diag, n_slots } = parseResponses(csvText);
 
-        if (parsedBuyers.length === 0 && parsedSellers.length === 0) {
-          throw new Error('No valid bid or offer rows found in responses.');
-        }
-
-        const clearingResults = runAllSlots(parsedBuyers, parsedSellers, n_slots);
-        const settlements = createSettlementRegister(clearingResults, n_slots);
-        const summaries = createParticipantSummary(parsedBuyers, parsedSellers, clearingResults);
-
         setBuyers(parsedBuyers);
         setSellers(parsedSellers);
-        setNSlots(n_slots);
-        setResults(clearingResults);
+        setNSlots(n_slots || 4);
         setDiagnostics(diag);
-        setSettlementRecords(settlements);
-        setParticipantSummaries(summaries);
         setSourceType(source);
         setLastSyncTime(new Date());
+
+        // Reset computed results on fresh intake:
+        // Before computation, the engine only reflects numbers of bids and offers received!
+        setResults({});
+        setSettlementRecords([]);
+        setParticipantSummaries([]);
+        setHasComputed(false);
         setError(null);
       } catch (err: any) {
-        console.error('Failed to parse or clear market data:', err);
-        setError(`Processing Error: ${err.message || String(err)}`);
+        console.error('Failed to parse intake responses:', err);
+        setBuyers([]);
+        setSellers([]);
+        setResults({});
+        setSettlementRecords([]);
+        setParticipantSummaries([]);
+        setHasComputed(false);
+        setError(`Intake Notice: ${err.message || String(err)}`);
       }
     },
     []
   );
 
-  // Fetch from Google Sheet
+  // Fetch from Google Sheet (If no valid bids/offers found, shows nothing / --)
   const handleSync = useCallback(async () => {
     setIsSyncing(true);
     setError(null);
@@ -159,16 +162,41 @@ export default function App() {
       processCSVData(csv, 'google-sheets');
     } catch (err: any) {
       console.warn('Google Sheet fetch error:', err.message);
-      // Fall back to demo data if first load fails
-      if (buyers.length === 0 && sellers.length === 0) {
-        const demoCSV = generateDemoCSV(4);
-        processCSVData(demoCSV, 'demo');
-      }
-      setError(`Notice: Using local simulation feed (${err.message}). Check sheet permissions or settings.`);
+      // DO NOT fallback to demo data! If no valid data, keep system empty (--)
+      setBuyers([]);
+      setSellers([]);
+      setResults({});
+      setSettlementRecords([]);
+      setParticipantSummaries([]);
+      setHasComputed(false);
+      setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
     } finally {
       setIsSyncing(false);
     }
-  }, [config.sheetId, config.sheetName, processCSVData, buyers.length, sellers.length]);
+  }, [config.sheetId, config.sheetName, processCSVData]);
+
+  // Explicitly run computation to simulate market clearing results
+  const handleCompute = useCallback(() => {
+    if (buyers.length === 0 && sellers.length === 0) {
+      setError('Cannot execute computation: No valid bids or offers found in sheet. All market clearing values are currently --.');
+      return;
+    }
+
+    try {
+      const clearingResults = runAllSlots(buyers, sellers, nSlots);
+      const settlements = createSettlementRegister(clearingResults, nSlots);
+      const summaries = createParticipantSummary(buyers, sellers, clearingResults);
+
+      setResults(clearingResults);
+      setSettlementRecords(settlements);
+      setParticipantSummaries(summaries);
+      setHasComputed(true);
+      setError(null);
+    } catch (err: any) {
+      console.error('Computation error:', err);
+      setError(`Computation Error: ${err.message || String(err)}`);
+    }
+  }, [buyers, sellers, nSlots]);
 
   // Initial load
   useEffect(() => {
@@ -262,8 +290,9 @@ export default function App() {
         <KpiCards
           results={results}
           nSlots={nSlots}
-          totalBuyers={uniqueBuyerCount}
-          totalSellers={uniqueSellerCount}
+          totalBuyers={buyers.length}
+          totalSellers={sellers.length}
+          hasComputed={hasComputed}
         />
 
         {/* Responsive Segmented Tabs */}
@@ -326,7 +355,7 @@ export default function App() {
               }`}
             >
               <Users className="w-4 h-4" />
-              <span>Participants ({participantSummaries.length})</span>
+              <span>Participants ({hasComputed ? participantSummaries.length : uniqueBuyerCount + uniqueSellerCount})</span>
             </button>
 
             <button
@@ -367,7 +396,8 @@ export default function App() {
               participantSummaries={participantSummaries}
               diagnostics={diagnostics}
               sessionLabel={sessionLabel}
-              onRecompute={handleSync}
+              hasComputed={hasComputed}
+              onRecompute={handleCompute}
               onViewOverview={() => setActiveTab('overview')}
               onViewSettlement={() => setActiveTab('settlement')}
               onViewCurves={() => setActiveTab('curves')}
@@ -376,15 +406,44 @@ export default function App() {
           )}
 
           {activeTab === 'overview' && (
-            <OverviewTab results={results} nSlots={nSlots} />
+            <OverviewTab
+              results={results}
+              nSlots={nSlots}
+              hasComputed={hasComputed}
+              totalBuyers={buyers.length}
+              totalSellers={sellers.length}
+              onRunCompute={() => {
+                setActiveTab('compute');
+                handleCompute();
+              }}
+            />
           )}
 
           {activeTab === 'curves' && (
-            <SupplyDemandChart results={results} nSlots={nSlots} />
+            <SupplyDemandChart
+              results={results}
+              nSlots={nSlots}
+              hasComputed={hasComputed}
+              totalBuyers={buyers.length}
+              totalSellers={sellers.length}
+              onRunCompute={() => {
+                setActiveTab('compute');
+                handleCompute();
+              }}
+            />
           )}
 
           {activeTab === 'settlement' && (
-            <SettlementTab settlementRecords={settlementRecords} />
+            <SettlementTab
+              settlementRecords={settlementRecords}
+              hasComputed={hasComputed}
+              totalBuyers={buyers.length}
+              totalSellers={sellers.length}
+              onRunCompute={() => {
+                setActiveTab('compute');
+                handleCompute();
+              }}
+            />
           )}
 
           {activeTab === 'participants' && (
@@ -393,7 +452,12 @@ export default function App() {
               sellers={sellers}
               participantSummaries={participantSummaries}
               nSlots={nSlots}
+              hasComputed={hasComputed}
               onPreviewEmail={(p) => setPreviewParticipant(p)}
+              onRunCompute={() => {
+                setActiveTab('compute');
+                handleCompute();
+              }}
             />
           )}
 
@@ -405,7 +469,12 @@ export default function App() {
               results={results}
               nSlots={nSlots}
               sessionLabel={sessionLabel}
+              hasComputed={hasComputed}
               onPreviewEmail={(p) => setPreviewParticipant(p)}
+              onRunCompute={() => {
+                setActiveTab('compute');
+                handleCompute();
+              }}
             />
           )}
 

@@ -1,13 +1,15 @@
 import React, { useState } from 'react';
-import { RawBidOfferRecord, ParticipantSummaryItem, SlotClearingResult } from '../types';
-import { Search, Download, Mail, Users, Flame } from 'lucide-react';
+import { RawBidOfferRecord, ParticipantSummaryItem } from '../types';
+import { Search, Download, Mail, Users, Flame, AlertCircle, Clock, Cpu } from 'lucide-react';
 
 interface ParticipantsTabProps {
   buyers: RawBidOfferRecord[];
   sellers: RawBidOfferRecord[];
   participantSummaries: ParticipantSummaryItem[];
   nSlots: number;
+  hasComputed?: boolean;
   onPreviewEmail: (participant: ParticipantSummaryItem) => void;
+  onRunCompute?: () => void;
 }
 
 export const ParticipantsTab: React.FC<ParticipantsTabProps> = ({
@@ -15,10 +17,15 @@ export const ParticipantsTab: React.FC<ParticipantsTabProps> = ({
   sellers,
   participantSummaries,
   nSlots,
+  hasComputed = false,
   onPreviewEmail,
+  onRunCompute,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'seller'>('all');
+
+  const hasParticipants = buyers.length > 0 || sellers.length > 0;
+  const isCalculated = hasComputed && participantSummaries.length > 0;
 
   const filteredSummaries = participantSummaries.filter((p) => {
     const matchesSearch =
@@ -61,6 +68,54 @@ export const ParticipantsTab: React.FC<ParticipantsTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Intake State Status Banner */}
+      {!hasParticipants ? (
+        <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-xs">
+          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="text-sm font-bold text-amber-950">
+              No Valid Bids or Offers Found in Sheet
+            </h3>
+            <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+              The connected Google Sheet currently contains no valid participant bids or offers. Raw bid and offer tables are empty (values displayed as <span className="font-mono font-bold text-amber-900">—</span>). Submit participant bids via Google Form or click <strong>Refresh</strong>.
+            </p>
+          </div>
+        </div>
+      ) : !hasComputed ? (
+        <div className="bg-gradient-to-r from-blue-50 via-indigo-50/50 to-white border border-indigo-200 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-sm shrink-0">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                  Data Intake Refreshed
+                </span>
+                <span className="text-xs font-semibold text-slate-500">
+                  Awaiting Computation
+                </span>
+              </div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5">
+                {buyers.length} Buyer Bids &amp; {sellers.length} Seller Offers Loaded
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Raw participant bids and offers are shown below. Run the clearing engine to calculate individual awarded capacities and financial settlements.
+              </p>
+            </div>
+          </div>
+          {onRunCompute && (
+            <button
+              onClick={onRunCompute}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              <Cpu className="w-4 h-4 text-amber-300" />
+              <span>Execute Market Clearing Engine</span>
+            </button>
+          )}
+        </div>
+      ) : null}
+
       {/* Search & Actions Bar */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
         <div className="relative w-full sm:w-80">
@@ -146,8 +201,12 @@ export const ParticipantsTab: React.FC<ParticipantsTabProps> = ({
             <tbody className="divide-y divide-slate-100">
               {filteredSummaries.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-slate-400">
-                    No participants matched your search.
+                  <td colSpan={7} className="p-8 text-center text-slate-500">
+                    {!hasParticipants
+                      ? 'No valid bids or offers found in sheet. Participant clearing summaries are —.'
+                      : !hasComputed
+                      ? 'Computation Pending: Bids and offers are loaded. Execute computation to calculate cleared allocation and settlement amounts.'
+                      : 'No participants matched your search.'}
                   </td>
                 </tr>
               ) : (

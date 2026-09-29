@@ -1,22 +1,106 @@
 import React, { useState } from 'react';
 import { SlotClearingResult } from '../types';
-import { Layers, CheckCircle, AlertTriangle, XCircle, Info } from 'lucide-react';
+import { Layers, CheckCircle, AlertTriangle, XCircle, Info, Cpu, Clock, AlertCircle } from 'lucide-react';
 
 interface SupplyDemandChartProps {
   results: Record<number, SlotClearingResult>;
   nSlots: number;
+  hasComputed?: boolean;
+  totalBuyers?: number;
+  totalSellers?: number;
+  onRunCompute?: () => void;
 }
 
-export const SupplyDemandChart: React.FC<SupplyDemandChartProps> = ({ results, nSlots }) => {
+export const SupplyDemandChart: React.FC<SupplyDemandChartProps> = ({
+  results,
+  nSlots,
+  hasComputed = false,
+  totalBuyers = 0,
+  totalSellers = 0,
+  onRunCompute,
+}) => {
   const [selectedSlot, setSelectedSlot] = useState<number>(1);
   const [hoveredPoint, setHoveredPoint] = useState<{ x: number; y: number; text: string } | null>(null);
 
-  const currentResult = results[selectedSlot];
+  const hasParticipants = totalBuyers > 0 || totalSellers > 0;
+  const isCalculated = hasComputed && hasParticipants;
+  const currentResult = isCalculated ? results[selectedSlot] : null;
 
-  if (!currentResult) {
+  if (!isCalculated || !currentResult) {
     return (
-      <div className="p-8 text-center text-slate-500 bg-white rounded-2xl border border-slate-200">
-        No market data available for slot T{selectedSlot}.
+      <div className="space-y-6">
+        {/* Intake State Status Banner */}
+        {!hasParticipants ? (
+          <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-xs">
+            <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-sm font-bold text-amber-950">
+                No Valid Bids or Offers Found in Sheet
+              </h3>
+              <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+                The connected Google Sheet currently contains no valid participant bids or offers. Supply and demand curves cannot be formulated (displayed as <span className="font-mono font-bold text-amber-900">—</span>). Submit participant bids via Google Form or click <strong>Refresh</strong>.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-gradient-to-r from-blue-50 via-indigo-50/50 to-white border border-indigo-200 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-sm shrink-0">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                    Data Intake Refreshed
+                  </span>
+                  <span className="text-xs font-semibold text-slate-500">
+                    Awaiting Computation
+                  </span>
+                </div>
+                <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5">
+                  {totalBuyers} Buyer Bids &amp; {totalSellers} Seller Offers Loaded
+                </h3>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Run the market clearing engine to solve the merit-order sorting and generate the equilibrium intersection curves.
+                </p>
+              </div>
+            </div>
+            {onRunCompute && (
+              <button
+                onClick={onRunCompute}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
+              >
+                <Cpu className="w-4 h-4 text-amber-300" />
+                <span>Execute Market Clearing Engine</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        <div className="p-12 text-center text-slate-500 bg-white rounded-2xl border border-slate-200/80 shadow-xs">
+          <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3">
+            <Layers className="w-6 h-6" />
+          </div>
+          <h3 className="text-base font-bold text-slate-900 mb-1">
+            {!hasParticipants
+              ? 'Supply & Demand Curves Unavailable'
+              : 'Equilibrium Step Curves Awaiting Computation'}
+          </h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
+            {!hasParticipants
+              ? 'No bids or offers are currently in the system. Submit bids to see the merit-order dispatch curves.'
+              : 'Market bids and offers are in the intake buffer. Click the button below to compute and display the curves.'}
+          </p>
+          {hasParticipants && onRunCompute && (
+            <button
+              onClick={onRunCompute}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer"
+            >
+              <Cpu className="w-4 h-4 text-amber-300" />
+              <span>Compute Market Curves</span>
+            </button>
+          )}
+        </div>
       </div>
     );
   }

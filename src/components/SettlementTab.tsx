@@ -1,22 +1,39 @@
 import React, { useState } from 'react';
 import { SettlementRecord } from '../types';
-import { DollarSign, Download, Search, CheckCircle, AlertTriangle } from 'lucide-react';
+import { DollarSign, Download, Search, CheckCircle, AlertTriangle, AlertCircle, Clock, Cpu } from 'lucide-react';
 
 interface SettlementTabProps {
   settlementRecords: SettlementRecord[];
+  hasComputed?: boolean;
+  totalBuyers?: number;
+  totalSellers?: number;
+  onRunCompute?: () => void;
 }
 
-export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords }) => {
+export const SettlementTab: React.FC<SettlementTabProps> = ({
+  settlementRecords,
+  hasComputed = false,
+  totalBuyers = 0,
+  totalSellers = 0,
+  onRunCompute,
+}) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'Buyer' | 'Seller'>('all');
 
-  const buyerTotal = settlementRecords
-    .filter((r) => r.role === 'Buyer')
-    .reduce((sum, r) => sum + r.amount_nrs, 0);
+  const hasParticipants = totalBuyers > 0 || totalSellers > 0;
+  const isCalculated = hasComputed && settlementRecords.length > 0;
 
-  const sellerTotal = settlementRecords
-    .filter((r) => r.role === 'Seller')
-    .reduce((sum, r) => sum + r.amount_nrs, 0);
+  const buyerTotal = isCalculated
+    ? settlementRecords
+        .filter((r) => r.role === 'Buyer')
+        .reduce((sum, r) => sum + r.amount_nrs, 0)
+    : 0;
+
+  const sellerTotal = isCalculated
+    ? settlementRecords
+        .filter((r) => r.role === 'Seller')
+        .reduce((sum, r) => sum + r.amount_nrs, 0)
+    : 0;
 
   const filteredRecords = settlementRecords.filter((r) => {
     const matchesSearch =
@@ -61,6 +78,54 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords 
 
   return (
     <div className="space-y-6">
+      {/* Intake State Status Banner */}
+      {!hasParticipants ? (
+        <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 sm:p-5 flex items-start gap-3 shadow-xs">
+          <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="text-sm font-bold text-amber-950">
+              No Valid Bids or Offers Found in Sheet
+            </h3>
+            <p className="text-xs text-amber-800 mt-1 leading-relaxed">
+              The connected Google Sheet currently contains no valid participant bids or offers. Settlement amounts across all participants are displayed as <span className="font-mono font-bold text-amber-900">—</span>. Submit participant bids via Google Form or click <strong>Refresh</strong>.
+            </p>
+          </div>
+        </div>
+      ) : !hasComputed ? (
+        <div className="bg-gradient-to-r from-blue-50 via-indigo-50/50 to-white border border-indigo-200 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-sm shrink-0">
+              <Clock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+                  Data Intake Refreshed
+                </span>
+                <span className="text-xs font-semibold text-slate-500">
+                  Awaiting Computation
+                </span>
+              </div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900 mt-0.5">
+                {totalBuyers} Buyer Bids &amp; {totalSellers} Seller Offers Loaded
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Financial drawl payables and generation receivables will be generated when you run the market clearing engine.
+              </p>
+            </div>
+          </div>
+          {onRunCompute && (
+            <button
+              onClick={onRunCompute}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              <Cpu className="w-4 h-4 text-amber-300" />
+              <span>Execute Market Clearing Engine</span>
+            </button>
+          )}
+        </div>
+      ) : null}
+
       {/* Financial KPIs */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
@@ -68,9 +133,11 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords 
             Buyer Payable (Total Drawl)
           </span>
           <div className="text-xl sm:text-2xl font-extrabold font-mono text-blue-700 tracking-tight">
-            NRs {buyerTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {isCalculated ? `NRs ${buyerTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Total revenue collected from buyers</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {isCalculated ? 'Total revenue collected from buyers' : 'Awaiting computation'}
+          </p>
         </div>
 
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
@@ -78,9 +145,11 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords 
             Seller Receivable (Total Dispatch)
           </span>
           <div className="text-xl sm:text-2xl font-extrabold font-mono text-rose-700 tracking-tight">
-            NRs {sellerTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {isCalculated ? `NRs ${sellerTotal.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Total remuneration to generators</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {isCalculated ? 'Total remuneration to generators' : 'Awaiting computation'}
+          </p>
         </div>
 
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-xs">
@@ -88,9 +157,13 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords 
             Market Cleared Balance
           </span>
           <div className="text-xl sm:text-2xl font-extrabold font-mono text-emerald-700 tracking-tight">
-            NRs {((buyerTotal + sellerTotal) / 2).toLocaleString('en-US', { minimumFractionDigits: 2 })}
+            {isCalculated
+              ? `NRs ${((buyerTotal + sellerTotal) / 2).toLocaleString('en-US', { minimumFractionDigits: 2 })}`
+              : '—'}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Net financial clearing volume</p>
+          <p className="text-xs text-slate-500 mt-1">
+            {isCalculated ? 'Net financial clearing volume' : 'Awaiting computation'}
+          </p>
         </div>
       </div>
 
@@ -176,8 +249,12 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({ settlementRecords 
             <tbody className="divide-y divide-slate-100">
               {filteredRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-slate-400">
-                    No settlement records found.
+                  <td colSpan={8} className="p-8 text-center text-slate-500">
+                    {!hasParticipants
+                      ? 'No valid bids or offers found in sheet. All settlement balances are currently —.'
+                      : !hasComputed
+                      ? 'Computation Pending: Bids and offers are loaded. Run the clearing engine in the Compute tab to generate settlement statements.'
+                      : 'No settlement records match your search or filter.'}
                   </td>
                 </tr>
               ) : (

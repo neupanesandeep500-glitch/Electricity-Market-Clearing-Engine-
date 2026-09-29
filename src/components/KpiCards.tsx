@@ -7,6 +7,7 @@ interface KpiCardsProps {
   nSlots: number;
   totalBuyers: number;
   totalSellers: number;
+  hasComputed?: boolean;
 }
 
 export const KpiCards: React.FC<KpiCardsProps> = ({
@@ -14,8 +15,15 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
   nSlots,
   totalBuyers,
   totalSellers,
+  hasComputed = false,
 }) => {
-  const clearedSlots = Object.values(results).filter((r) => r && r.status === 'Cleared');
+  const hasParticipants = totalBuyers > 0 || totalSellers > 0;
+  const isCalculated = hasComputed && hasParticipants;
+
+  const clearedSlots = isCalculated
+    ? Object.values(results).filter((r) => r && r.status === 'Cleared')
+    : [];
+
   const avgMcp =
     clearedSlots.length > 0
       ? clearedSlots.reduce((sum, r) => sum + r.mcp, 0) / clearedSlots.length
@@ -38,10 +46,10 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-amber-600 tracking-tight leading-none mb-1">
-          {clearedSlots.length > 0 ? `NRs ${avgMcp.toFixed(3)}` : '—'}
+          {isCalculated && clearedSlots.length > 0 ? `NRs ${avgMcp.toFixed(3)}` : '—'}
         </div>
         <div className="text-[11px] text-slate-500 font-medium">
-          NRs/kWh · across cleared slots
+          {isCalculated ? 'NRs/kWh · across cleared slots' : 'Awaiting computation'}
         </div>
       </div>
 
@@ -56,11 +64,17 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-blue-700 tracking-tight leading-none mb-1">
-          {clearedSlots.length > 0 ? `${totalMw.toFixed(2)}` : '—'}
-          <span className="text-sm font-semibold text-slate-400 ml-1">MW</span>
+          {isCalculated && clearedSlots.length > 0 ? (
+            <>
+              {totalMw.toFixed(2)}
+              <span className="text-sm font-semibold text-slate-400 ml-1">MW</span>
+            </>
+          ) : (
+            '—'
+          )}
         </div>
         <div className="text-[11px] text-slate-500 font-medium">
-          Total dispatched capacity
+          {isCalculated ? 'Total dispatched capacity' : 'Awaiting computation'}
         </div>
       </div>
 
@@ -75,11 +89,17 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-cyan-700 tracking-tight leading-none mb-1">
-          {clearedSlots.length > 0 ? `${totalMwh.toFixed(3)}` : '—'}
-          <span className="text-sm font-semibold text-slate-400 ml-1">MWh</span>
+          {isCalculated && clearedSlots.length > 0 ? (
+            <>
+              {totalMwh.toFixed(3)}
+              <span className="text-sm font-semibold text-slate-400 ml-1">MWh</span>
+            </>
+          ) : (
+            '—'
+          )}
         </div>
         <div className="text-[11px] text-slate-500 font-medium">
-          MW × 0.25 (15-min slots)
+          {isCalculated ? 'MW × 0.25 (15-min slots)' : 'Awaiting computation'}
         </div>
       </div>
 
@@ -94,31 +114,37 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-emerald-700 tracking-tight leading-none mb-1">
-          {clearedSlots.length > 0
+          {isCalculated && clearedSlots.length > 0
             ? `NRs ${Math.round(totalMarketValue).toLocaleString('en-US')}`
             : '—'}
         </div>
         <div className="text-[11px] text-slate-500 font-medium">
-          Total settlement volume
+          {isCalculated ? 'Total settlement volume' : 'Awaiting computation'}
         </div>
       </div>
 
-      {/* 5. Participants */}
+      {/* 5. Participants Intake */}
       <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-xs relative overflow-hidden">
         <div className="flex items-center justify-between mb-2">
           <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
-            Participants
+            Intake Received
           </span>
           <div className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600">
             <Users className="w-4 h-4" />
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-indigo-900 tracking-tight leading-none mb-1">
-          {totalBuyers + totalSellers}
+          {hasParticipants ? totalBuyers + totalSellers : '—'}
         </div>
         <div className="text-[11px] text-slate-500 font-medium truncate">
-          <span className="text-blue-600 font-semibold">{totalBuyers} Buyers</span> ·{' '}
-          <span className="text-rose-600 font-semibold">{totalSellers} Sellers</span>
+          {hasParticipants ? (
+            <>
+              <span className="text-blue-600 font-semibold">{totalBuyers} Bids</span> ·{' '}
+              <span className="text-rose-600 font-semibold">{totalSellers} Offers</span>
+            </>
+          ) : (
+            'No valid bids/offers'
+          )}
         </div>
       </div>
 
@@ -133,10 +159,16 @@ export const KpiCards: React.FC<KpiCardsProps> = ({
           </div>
         </div>
         <div className="text-xl sm:text-2xl font-extrabold font-mono text-slate-900 tracking-tight leading-none mb-1">
-          {clearedSlots.length} / {nSlots}
+          {isCalculated ? `${clearedSlots.length} / ${nSlots}` : '—'}
         </div>
         <div className="text-[11px] text-emerald-600 font-semibold">
-          {clearedSlots.length === nSlots ? '100% Slots Cleared' : `${clearedSlots.length} Cleared`}
+          {!hasParticipants
+            ? 'No bids/offers in sheet'
+            : !hasComputed
+            ? 'Pending computation'
+            : clearedSlots.length === nSlots
+            ? '100% Slots Cleared'
+            : `${clearedSlots.length} Cleared`}
         </div>
       </div>
     </div>

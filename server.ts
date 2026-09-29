@@ -17,7 +17,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Email credentials
-const EMAIL_SENDER = process.env.EMAIL_SENDER || 'neupanesandeep500@gmail.com';
+const EMAIL_SENDER = process.env.EMAIL_SENDER || '080mspse021.sandeep@pcampus.edu.np';
 const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD || 'kroe tysm nrlv zomr';
 
 /**
