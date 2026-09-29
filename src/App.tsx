@@ -183,14 +183,6 @@ export default function App() {
         }
       }
 
-      // 2. If user manually clicks refresh while results are already computed, confirm intent
-      if (!isAuto && hasComputedRef.current && !isExplicitReset) {
-        const proceed = window.confirm(
-          'Market clearing results are currently computed and displayed. Refreshing now will pull new bids, re-open bids taking, and reset the engine to the intake state. Do you want to proceed?'
-        );
-        if (!proceed) return;
-      }
-
       setIsSyncing(true);
       setError(null);
       try {
@@ -272,12 +264,7 @@ export default function App() {
       isBidsTakingActiveRef.current = false;
       setConfig((prev) => ({ ...prev, autoSync: false }));
     } else {
-      // Re-open
-      const proceed = window.confirm(
-        'Re-opening bids taking will enable live intake from Google Sheet and reset current market clearing calculations. Do you want to proceed?'
-      );
-      if (!proceed) return;
-
+      // Re-open bids
       setIsBidsTakingActive(true);
       isBidsTakingActiveRef.current = true;
       setHasComputed(false);
@@ -293,11 +280,6 @@ export default function App() {
 
   // Re-open Bids Taking & Sheet Sync
   const handleReopenBidsTaking = useCallback(() => {
-    const proceed = window.confirm(
-      'Re-opening bids taking will re-enable automatic Google Sheet sync and reset current market clearing results to ingest fresh incoming bids. Do you want to proceed?'
-    );
-    if (!proceed) return;
-
     setIsBidsTakingActive(true);
     isBidsTakingActiveRef.current = true;
     setHasComputed(false);

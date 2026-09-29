@@ -93,11 +93,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
 
           <form onSubmit={handleSubmit} className="space-y-4 text-xs">
             <div>
-              <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
-                <span>Account Email ID</span>
-                <span className="text-[10px] text-slate-400 uppercase font-mono">
-                  {selectedRole === 'ADMIN' ? 'Admin Access' : 'Participant Access'}
-                </span>
+              <label className="font-bold text-slate-700 block mb-1">
+                Account Email ID
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
@@ -113,9 +110,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
             </div>
 
             <div>
-              <label className="font-bold text-slate-700 block mb-1 flex items-center justify-between">
-                <span>Password</span>
-                <span className="text-[10px] text-slate-400 font-mono">Confidential</span>
+              <label className="font-bold text-slate-700 block mb-1">
+                Password
               </label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
@@ -139,11 +135,6 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
               <ArrowRight className="w-4 h-4" />
             </button>
           </form>
-        </div>
-
-        {/* Footer Note */}
-        <div className="bg-slate-50 px-6 py-3 border-t border-slate-100 text-center text-[10px] text-slate-400">
-          Security: Only ADMIN has permission to provision users, edit configs, or modify credentials.
         </div>
       </div>
     </div>
