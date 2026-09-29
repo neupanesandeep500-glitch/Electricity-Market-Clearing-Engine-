@@ -100,6 +100,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
 
   // Modals & Auth
+  const [isBidsTakingActive, setIsBidsTakingActive] = useState<boolean>(true);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(getCurrentUser());
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUserManagementModalOpen, setIsUserManagementModalOpen] = useState(false);
@@ -109,15 +110,31 @@ export default function App() {
 
   const sessionLabel = useRef(`Market Session ${new Date().toLocaleDateString()}`).current;
 
+  // Stable refs to prevent race conditions or background sync wiping computed results
+  const hasComputedRef = useRef(hasComputed);
+  hasComputedRef.current = hasComputed;
+  const isBidsTakingActiveRef = useRef(isBidsTakingActive);
+  isBidsTakingActiveRef.current = isBidsTakingActive;
+
   // Handle Logout
   const handleLogout = () => {
     logoutUser();
     setCurrentUser(null);
   };
 
-  // Process raw CSV intake data (refreshes intake; does NOT auto-compute clearing results)
+  // Update a participant's email in memory and state
+  const handleUpdateParticipantEmail = useCallback((participantName: string, newEmail: string) => {
+    setParticipantSummaries((prev) =>
+      prev.map((p) => (p.name === participantName ? { ...p, email: newEmail } : p))
+    );
+    setSettlementRecords((prev) =>
+      prev.map((r) => (r.participant === participantName ? { ...r, email: newEmail } : r))
+    );
+  }, []);
+
+  // Process raw CSV intake data
   const processCSVData = useCallback(
-    (csvText: string, source: 'google-sheets' | 'demo' | 'csv-upload') => {
+    (csvText: string, source: 'google-sheets' | 'demo' | 'csv-upload', isExplicitReset = false) => {
       try {
         const { buyers: parsedBuyers, sellers: parsedSellers, diagnostics: diag, n_slots } = parseResponses(csvText);
 
@@ -128,34 +145,48 @@ export default function App() {
         setSourceType(source);
         setLastSyncTime(new Date());
 
-        // Reset computed results on fresh intake:
-        // Before computation, the engine only reflects numbers of bids and offers received!
-        setResults({});
-        setSettlementRecords([]);
-        setParticipantSummaries([]);
-        setHasComputed(false);
+        // CRITICAL: If results have already been computed or bids are locked,
+        // DO NOT wipe the computed market equilibrium unless this was an explicit user reset!
+        if (!hasComputedRef.current || isExplicitReset) {
+          setResults({});
+          setSettlementRecords([]);
+          setParticipantSummaries([]);
+          setHasComputed(false);
+          hasComputedRef.current = false;
+        }
         setError(null);
       } catch (err: any) {
         console.error('Failed to parse intake responses:', err);
-        setBuyers([]);
-        setSellers([]);
-        setResults({});
-        setSettlementRecords([]);
-        setParticipantSummaries([]);
-        setHasComputed(false);
+        // If already computed, keep results protected
+        if (!hasComputedRef.current || isExplicitReset) {
+          setBuyers([]);
+          setSellers([]);
+          setResults({});
+          setSettlementRecords([]);
+          setParticipantSummaries([]);
+          setHasComputed(false);
+          hasComputedRef.current = false;
+        }
         setError(`Intake Notice: ${err.message || String(err)}`);
       }
     },
     []
   );
 
-  // Fetch from Google Sheet (If no valid bids/offers found, shows nothing / --)
+  // Fetch from Google Sheet
   const handleSync = useCallback(
-    async (isAuto = false) => {
-      // If user manually clicks refresh while results are already computed, confirm intent
-      if (!isAuto && hasComputed) {
+    async (isAuto = false, isExplicitReset = false) => {
+      // 1. If this is an auto-sync check, ABORT if market is already computed or bids are locked!
+      if (isAuto) {
+        if (hasComputedRef.current || !isBidsTakingActiveRef.current) {
+          return;
+        }
+      }
+
+      // 2. If user manually clicks refresh while results are already computed, confirm intent
+      if (!isAuto && hasComputedRef.current && !isExplicitReset) {
         const proceed = window.confirm(
-          'Market clearing results are currently computed and displayed. Refreshing now will pull new bids and reset the engine to the intake state. Do you want to proceed?'
+          'Market clearing results are currently computed and displayed. Refreshing now will pull new bids, re-open bids taking, and reset the engine to the intake state. Do you want to proceed?'
         );
         if (!proceed) return;
       }
@@ -168,25 +199,27 @@ export default function App() {
           sheetName: config.sheetName,
         });
 
-        processCSVData(csv, 'google-sheets');
+        processCSVData(csv, 'google-sheets', isExplicitReset);
       } catch (err: any) {
         console.warn('Google Sheet fetch error:', err.message);
-        // DO NOT fallback to demo data! If no valid data, keep system empty (--)
-        setBuyers([]);
-        setSellers([]);
-        setResults({});
-        setSettlementRecords([]);
-        setParticipantSummaries([]);
-        setHasComputed(false);
-        setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
+        if (!hasComputedRef.current) {
+          setBuyers([]);
+          setSellers([]);
+          setResults({});
+          setSettlementRecords([]);
+          setParticipantSummaries([]);
+          setHasComputed(false);
+          setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
+        }
       } finally {
         setIsSyncing(false);
       }
     },
-    [config.sheetId, config.sheetName, processCSVData, hasComputed]
+    [config.sheetId, config.sheetName, processCSVData]
   );
 
   // Explicitly run computation to simulate market clearing results
+  // Turns off bids taking and auto-refreshing to the sheet to keep results and visualization stable
   const handleCompute = useCallback(() => {
     if (buyers.length === 0 && sellers.length === 0) {
       setError('Cannot execute computation: No valid bids or offers found in sheet. All market clearing values are currently --.');
@@ -202,30 +235,105 @@ export default function App() {
       setSettlementRecords(settlements);
       setParticipantSummaries(summaries);
       setHasComputed(true);
+      hasComputedRef.current = true;
+
+      // Lock bids taking and turn off auto-refresh to sheet so results and visualization remain 100% stable
+      setIsBidsTakingActive(false);
+      isBidsTakingActiveRef.current = false;
+      setConfig((prev) => ({ ...prev, autoSync: false }));
       setError(null);
+
+      // Cache computed results in sessionStorage as backup
+      try {
+        sessionStorage.setItem(
+          'nem_market_cleared_cache',
+          JSON.stringify({
+            results: clearingResults,
+            settlementRecords: settlements,
+            participantSummaries: summaries,
+            nSlots,
+            timestamp: new Date().toISOString(),
+          })
+        );
+      } catch {
+        // quota ignore
+      }
     } catch (err: any) {
       console.error('Computation error:', err);
       setError(`Computation Error: ${err.message || String(err)}`);
     }
   }, [buyers, sellers, nSlots]);
 
-  // Initial load
+  // Lock / Unlock Bids Intake Toggle
+  const handleToggleLockBids = useCallback(() => {
+    if (isBidsTakingActive) {
+      // Lock bids
+      setIsBidsTakingActive(false);
+      isBidsTakingActiveRef.current = false;
+      setConfig((prev) => ({ ...prev, autoSync: false }));
+    } else {
+      // Re-open
+      const proceed = window.confirm(
+        'Re-opening bids taking will enable live intake from Google Sheet and reset current market clearing calculations. Do you want to proceed?'
+      );
+      if (!proceed) return;
+
+      setIsBidsTakingActive(true);
+      isBidsTakingActiveRef.current = true;
+      setHasComputed(false);
+      hasComputedRef.current = false;
+      setResults({});
+      setSettlementRecords([]);
+      setParticipantSummaries([]);
+      sessionStorage.removeItem('nem_market_cleared_cache');
+      setConfig((prev) => ({ ...prev, autoSync: true }));
+      handleSync(false, true);
+    }
+  }, [isBidsTakingActive, handleSync]);
+
+  // Re-open Bids Taking & Sheet Sync
+  const handleReopenBidsTaking = useCallback(() => {
+    const proceed = window.confirm(
+      'Re-opening bids taking will re-enable automatic Google Sheet sync and reset current market clearing results to ingest fresh incoming bids. Do you want to proceed?'
+    );
+    if (!proceed) return;
+
+    setIsBidsTakingActive(true);
+    isBidsTakingActiveRef.current = true;
+    setHasComputed(false);
+    hasComputedRef.current = false;
+    setResults({});
+    setSettlementRecords([]);
+    setParticipantSummaries([]);
+    sessionStorage.removeItem('nem_market_cleared_cache');
+    setConfig((prev) => ({ ...prev, autoSync: true }));
+    handleSync(false, true);
+  }, [handleSync]);
+
+  // Initial load - ONLY executes once on component mount
+  const initialLoadExecuted = useRef(false);
   useEffect(() => {
-    handleSync(true);
+    if (!initialLoadExecuted.current) {
+      initialLoadExecuted.current = true;
+      handleSync(true);
+    }
   }, [handleSync]);
 
   // Polling Interval: Auto-sync during intake before computation.
-  // Once computation is done, do NOT auto-refresh the system so users can analyze data undisturbed!
+  // Once computation is done OR bids are locked, NEVER auto-refresh so users can analyze data undisturbed!
   useEffect(() => {
     if (!config.autoSync || config.syncIntervalSec <= 0) return;
-    if (hasComputed) return;
+    if (hasComputed || !isBidsTakingActive) return;
 
     const timer = setInterval(() => {
-      handleSync(true);
+      // Extra guard using current refs
+      if (!hasComputedRef.current && isBidsTakingActiveRef.current) {
+        handleSync(true);
+      }
     }, config.syncIntervalSec * 1000);
 
     return () => clearInterval(timer);
-  }, [config.autoSync, config.syncIntervalSec, handleSync, hasComputed]);
+  }, [config.autoSync, config.syncIntervalSec, handleSync, hasComputed, isBidsTakingActive]);
 
   // Download Standalone HTML
   const handleDownloadStandalone = () => {
@@ -259,79 +367,16 @@ export default function App() {
       />
 
       {/* Main Viewport Content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5">
-        {/* Closed Auction Live Session Status Banner (Single Place QR is in Header) */}
-        <section className="bg-gradient-to-r from-white via-indigo-50/40 to-white border border-indigo-100/80 rounded-2xl p-4 sm:p-5 mb-5 shadow-xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-indigo-900 text-white flex items-center justify-center shrink-0 shadow-sm font-bold">
-              <Cpu className="w-6 h-6 text-amber-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] font-extrabold text-indigo-700 bg-indigo-100/80 px-2 py-0.5 rounded-full uppercase tracking-wider">
-                  {hasComputed ? 'Clearing Solved' : 'Closed Auction Intake'}
-                </span>
-                <span className="text-slate-300">·</span>
-                <span className="text-xs text-slate-500 font-medium">
-                  {buyers.length === 0 && sellers.length === 0
-                    ? 'No valid bids or offers in sheet'
-                    : hasComputed
-                    ? `${participantSummaries.length} Participants Cleared · Auto-refresh Paused for Analysis`
-                    : `${buyers.length} Buyer Bids & ${sellers.length} Seller Offers Received (Sealed)`}
-                </span>
-              </div>
-              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight mt-0.5">
-                {buyers.length === 0 && sellers.length === 0
-                  ? 'Sheet Empty: Awaiting participant bid submissions via Google Form'
-                  : hasComputed
-                  ? 'Market Clearing Solved: Results locked for participant dispatch analysis'
-                  : 'Bids & Offers Intake Active: Submit bids, then click Compute to solve clearing'}
-              </h2>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 w-full md:w-auto">
-            {!hasComputed ? (
-              <button
-                onClick={() => {
-                  setActiveTab('compute');
-                  handleCompute();
-                }}
-                disabled={buyers.length === 0 && sellers.length === 0}
-                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-xs cursor-pointer disabled:opacity-50"
-              >
-                <Cpu className="w-4 h-4" />
-                <span>Compute Market</span>
-              </button>
-            ) : (
-              <button
-                onClick={() => handleSync(false)}
-                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 transition-colors shadow-xs cursor-pointer"
-              >
-                <span>Re-open Intake</span>
-              </button>
-            )}
-          </div>
-        </section>
-
-        {/* Global KPIs */}
-        <KpiCards
-          results={results}
-          nSlots={nSlots}
-          totalBuyers={buyers.length}
-          totalSellers={sellers.length}
-          hasComputed={hasComputed}
-        />
-
-        {/* Responsive Segmented Tabs */}
-        <div className="sticky top-[69px] z-30 bg-[#F8FAFC] pb-3">
-          <nav className="flex items-center gap-1 p-1 bg-slate-200/80 rounded-xl overflow-x-auto shadow-2xs">
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 space-y-5">
+        {/* 1. APPLICATION MAIN TABS NAVIGATION (Positioned at the Top) */}
+        <div className="sticky top-[58px] sm:top-[64px] z-30 bg-[#F8FAFC]/95 backdrop-blur-md pt-1 pb-3 border-b border-slate-200/80">
+          <nav className="flex items-center gap-1.5 p-1.5 bg-slate-200/90 rounded-2xl overflow-x-auto shadow-xs border border-slate-300/60">
             <button
               onClick={() => setActiveTab('compute')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'compute'
-                  ? 'bg-gradient-to-r from-indigo-950 to-blue-900 text-white shadow-xs'
-                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/50'
+                  ? 'bg-gradient-to-r from-indigo-950 to-blue-900 text-white shadow-sm ring-1 ring-white/20'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <Cpu className={`w-4 h-4 ${activeTab === 'compute' ? 'text-amber-400' : 'text-slate-600'}`} />
@@ -340,10 +385,10 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('overview')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'overview'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <LayoutDashboard className="w-4 h-4" />
@@ -352,10 +397,10 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('curves')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'curves'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <TrendingUp className="w-4 h-4" />
@@ -364,10 +409,10 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('settlement')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'settlement'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <CreditCard className="w-4 h-4" />
@@ -376,34 +421,36 @@ export default function App() {
 
             <button
               onClick={() => setActiveTab('participants')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'participants'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <Users className="w-4 h-4" />
-              <span>Participants ({hasComputed ? participantSummaries.length : uniqueBuyerCount + uniqueSellerCount})</span>
+              <span>
+                Participants ({hasComputed ? participantSummaries.length : uniqueBuyerCount + uniqueSellerCount})
+              </span>
             </button>
 
             <button
               onClick={() => setActiveTab('emails')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'emails'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <MailCheck className="w-4 h-4" />
-              <span>Email Confirmation Engine</span>
+              <span>Email Confirmations</span>
             </button>
 
             <button
               onClick={() => setActiveTab('diagnostics')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
                 activeTab === 'diagnostics'
-                  ? 'bg-white text-indigo-950 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-white/50'
+                  ? 'bg-white text-indigo-950 shadow-sm ring-1 ring-slate-200 font-extrabold'
+                  : 'text-slate-700 hover:text-slate-950 hover:bg-white/60'
               }`}
             >
               <ShieldAlert className="w-4 h-4" />
@@ -412,7 +459,101 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Tab Views */}
+        {/* 2. CLOSED AUCTION & BIDS TAKING STATUS BAR */}
+        <section
+          className={`border rounded-2xl p-4 sm:p-5 shadow-xs transition-colors flex flex-col md:flex-row items-start md:items-center justify-between gap-4 ${
+            hasComputed
+              ? 'bg-gradient-to-r from-emerald-50/60 via-slate-50 to-indigo-50/40 border-emerald-200/80'
+              : 'bg-gradient-to-r from-white via-indigo-50/50 to-white border-indigo-100/90'
+          }`}
+        >
+          <div className="flex items-center gap-3.5">
+            <div
+              className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 shadow-sm font-bold ${
+                hasComputed ? 'bg-emerald-900 text-white' : 'bg-indigo-900 text-white'
+              }`}
+            >
+              {hasComputed ? <Cpu className="w-6 h-6 text-emerald-400" /> : <Cpu className="w-6 h-6 text-amber-400" />}
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider ${
+                    hasComputed
+                      ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                      : 'bg-indigo-100 text-indigo-800 border border-indigo-200'
+                  }`}
+                >
+                  {hasComputed ? '🔒 Bids Taking Closed · Sheet Sync Off' : '🟢 Bids Taking Open · Sheet Sync Active'}
+                </span>
+                <span className="text-slate-300">·</span>
+                <span className="text-xs text-slate-600 font-medium">
+                  {buyers.length === 0 && sellers.length === 0
+                    ? 'No valid bids or offers in sheet'
+                    : hasComputed
+                    ? `${participantSummaries.length} Participants Cleared · Market Results Locked for Visualization`
+                    : `${buyers.length} Buyer Bids & ${sellers.length} Seller Offers Loaded (Closed Auction)`}
+                </span>
+              </div>
+              <h2 className="text-sm sm:text-base font-extrabold text-slate-900 leading-tight mt-1">
+                {buyers.length === 0 && sellers.length === 0
+                  ? 'Sheet Empty: Awaiting participant bid submissions via Google Form'
+                  : hasComputed
+                  ? 'Market Clearing Solved: Auto-refresh disabled to keep charts, heatmaps, and results stable'
+                  : 'Closed Auction Intake Active: Submit bids, then click Compute Market to solve clearing'}
+              </h2>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 w-full md:w-auto shrink-0 flex-wrap">
+            {!hasComputed ? (
+              <>
+                <button
+                  onClick={handleToggleLockBids}
+                  className={`flex-1 md:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-bold rounded-xl transition-colors shadow-2xs cursor-pointer border ${
+                    !isBidsTakingActive
+                      ? 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                  title={isBidsTakingActive ? 'Lock intake to freeze incoming bids and stop auto-refresh' : 'Unlock to resume bids intake'}
+                >
+                  <span>{!isBidsTakingActive ? '🔒 Bids Locked (Click to Unlock)' : '🔓 Lock Bids (Stop Refresh)'}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('compute');
+                    handleCompute();
+                  }}
+                  disabled={buyers.length === 0 && sellers.length === 0}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-5 py-2.5 text-xs font-bold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 transition-colors shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  <Cpu className="w-4 h-4" />
+                  <span>Compute Market (Lock Bids)</span>
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={handleReopenBidsTaking}
+                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-indigo-900 hover:bg-indigo-800 text-white transition-colors shadow-sm cursor-pointer"
+                title="Re-open intake and re-enable Google Sheet sync"
+              >
+                <span>Re-open Bids Taking &amp; Sheet Sync</span>
+              </button>
+            )}
+          </div>
+        </section>
+
+        {/* 3. MARKET KPIS (Positioned only after Main Tabs and Status Bar) */}
+        <KpiCards
+          results={results}
+          nSlots={nSlots}
+          totalBuyers={buyers.length}
+          totalSellers={sellers.length}
+          hasComputed={hasComputed}
+        />
+
+        {/* 4. ACTIVE TAB VIEW CONTAINER */}
         <div className="pb-10">
           {activeTab === 'compute' && (
             <ComputeTab
@@ -503,6 +644,7 @@ export default function App() {
                 setActiveTab('compute');
                 handleCompute();
               }}
+              onUpdateParticipantEmail={handleUpdateParticipantEmail}
             />
           )}
 

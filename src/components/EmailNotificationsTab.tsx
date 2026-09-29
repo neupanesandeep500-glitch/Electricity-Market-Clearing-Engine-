@@ -9,8 +9,27 @@ import {
   collectParticipantSlotData,
   buildParticipantEmail,
   sendBatchNotifications,
+  sendSingleNotification,
+  verifySmtpConnection,
+  generateMailtoLink,
 } from '../services/emailService';
-import { Mail, Send, Play, CheckCircle2, AlertCircle, Download, Eye, Clock } from 'lucide-react';
+import {
+  Mail,
+  Send,
+  Play,
+  CheckCircle2,
+  AlertCircle,
+  Download,
+  Eye,
+  Edit2,
+  Check,
+  X,
+  ExternalLink,
+  ShieldCheck,
+  RefreshCw,
+  Loader2,
+  Cpu,
+} from 'lucide-react';
 
 interface EmailNotificationsTabProps {
   participantSummaries: ParticipantSummaryItem[];
@@ -22,6 +41,7 @@ interface EmailNotificationsTabProps {
   hasComputed?: boolean;
   onPreviewEmail: (participant: ParticipantSummaryItem) => void;
   onRunCompute?: () => void;
+  onUpdateParticipantEmail?: (participantName: string, newEmail: string) => void;
 }
 
 export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
@@ -34,21 +54,144 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   hasComputed = false,
   onPreviewEmail,
   onRunCompute,
+  onUpdateParticipantEmail,
 }) => {
   const [logs, setLogs] = useState<EmailLogEntry[]>([]);
   const [isSending, setIsSending] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusType, setStatusType] = useState<'success' | 'error' | 'info'>('info');
   const [showSmtpConfig, setShowSmtpConfig] = useState(false);
   const [senderEmail, setSenderEmail] = useState('');
   const [appPassword, setAppPassword] = useState('');
+  const [isVerifyingSmtp, setIsVerifyingSmtp] = useState(false);
+  const [smtpVerifyResult, setSmtpVerifyResult] = useState<{ success: boolean; message: string } | null>(null);
 
-  const hasParticipants = buyers.length > 0 || sellers.length > 0;
+  // Inline email editing state
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [tempEmail, setTempEmail] = useState('');
+
+  // Per-row sending state
+  const [sendingRowName, setSendingRowName] = useState<string | null>(null);
+
   const isCalculated = hasComputed && participantSummaries.length > 0;
-
   const clearedCount = isCalculated ? Object.values(results).filter((r) => r && r.status === 'Cleared').length : 0;
   const withEmailCount = isCalculated ? participantSummaries.filter((p) => p.email && p.email.includes('@')).length : 0;
   const withoutEmailCount = isCalculated ? participantSummaries.length - withEmailCount : 0;
 
+  // Handle verify SMTP connection
+  const handleTestSmtp = async () => {
+    setIsVerifyingSmtp(true);
+    setSmtpVerifyResult(null);
+    try {
+      const creds = senderEmail && appPassword ? { sender: senderEmail, password: appPassword } : undefined;
+      const res = await verifySmtpConnection(creds);
+      if (res.success) {
+        setSmtpVerifyResult({
+          success: true,
+          message: res.message || 'SMTP connection verified successfully!',
+        });
+      } else {
+        setSmtpVerifyResult({
+          success: false,
+          message: res.error || 'SMTP verification failed. Check credentials or network connectivity.',
+        });
+      }
+    } catch (err: any) {
+      setSmtpVerifyResult({
+        success: false,
+        message: err.message || String(err),
+      });
+    } finally {
+      setIsVerifyingSmtp(false);
+    }
+  };
+
+  // Start editing a participant's email
+  const startEditEmail = (p: ParticipantSummaryItem) => {
+    setEditingName(p.name);
+    setTempEmail(p.email || '');
+  };
+
+  // Save participant email edit
+  const saveEmailEdit = (name: string) => {
+    if (onUpdateParticipantEmail) {
+      onUpdateParticipantEmail(name, tempEmail.trim());
+    } else {
+      // Direct local mutate if callback omitted
+      const item = participantSummaries.find((p) => p.name === name);
+      if (item) item.email = tempEmail.trim();
+    }
+    setEditingName(null);
+  };
+
+  // Send email to a single participant
+  const handleSendSingle = async (p: ParticipantSummaryItem) => {
+    if (!p.email || !p.email.includes('@')) {
+      alert(`Please enter a valid email address for ${p.name} first.`);
+      startEditEmail(p);
+      return;
+    }
+
+    setSendingRowName(p.name);
+    const slotData = collectParticipantSlotData(
+      p.name,
+      p.role,
+      buyers,
+      sellers,
+      results,
+      nSlots
+    );
+    const email = buildParticipantEmail(
+      p.name,
+      p.role,
+      slotData,
+      sessionLabel,
+      clearedCount,
+      nSlots
+    );
+
+    try {
+      const creds = senderEmail && appPassword ? { sender: senderEmail, password: appPassword } : undefined;
+      const res = await sendSingleNotification(
+        {
+          to: p.email,
+          subject: email.subject,
+          html: email.html,
+          text: email.text,
+        },
+        creds
+      );
+
+      if (res.success) {
+        setStatusType('success');
+        setStatusMessage(`Notification successfully sent to ${p.name} (${p.email})!`);
+        // Update log
+        setLogs((prev) => [
+          {
+            name: p.name,
+            role: p.role,
+            email: p.email,
+            status: 'sent',
+            attempts: 1,
+            awarded_mw: p.actual_dispatch_drawl_mw,
+            amount_nrs: p.total_settlement_nrs,
+            sent_at: new Date().toISOString(),
+          },
+          ...prev.filter((l) => l.name !== p.name),
+        ]);
+      } else {
+        setStatusType('error');
+        setStatusMessage(`Failed to send to ${p.name}: ${res.error}. Try "Open in Mail App".`);
+      }
+    } catch (err: any) {
+      setStatusType('error');
+      setStatusMessage(`Error sending to ${p.name}: ${err.message || String(err)}`);
+    } finally {
+      setSendingRowName(null);
+    }
+  };
+
+  // Batch notification dispatch
   const handleSendBatch = async (dryRun = false) => {
     if (!hasComputed) {
       alert('Please run the market clearing computation in the Compute tab first.');
@@ -56,6 +199,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
     }
 
     setIsSending(true);
+    setStatusType('info');
     setStatusMessage(dryRun ? 'Running dry-run simulation...' : 'Dispatching notifications via SMTP...');
 
     const jobs = participantSummaries.map((p) => {
@@ -93,14 +237,22 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
       const resultLogs = await sendBatchNotifications(jobs, dryRun, smtpCredentials);
       setLogs(resultLogs);
       const sentCount = resultLogs.filter((l) => l.status === 'sent').length;
+      const failedCount = resultLogs.filter((l) => l.status === 'failed').length;
       const dryCount = resultLogs.filter((l) => l.status === 'dry_run').length;
-      setStatusMessage(
-        dryRun
-          ? `✅ Dry-run completed: ${dryCount} message(s) previewed successfully.`
-          : `✅ Batch dispatch completed: ${sentCount} sent.`
-      );
+
+      if (dryRun) {
+        setStatusType('success');
+        setStatusMessage(`Dry-run completed: ${dryCount} message(s) previewed successfully.`);
+      } else if (failedCount > 0) {
+        setStatusType('error');
+        setStatusMessage(`Batch completed: ${sentCount} sent, ${failedCount} failed. Check audit log for details or use "Open in Mail App".`);
+      } else {
+        setStatusType('success');
+        setStatusMessage(`Batch dispatch completed: All ${sentCount} participant notifications sent successfully!`);
+      }
     } catch (err: any) {
-      setStatusMessage(`❌ Error during batch notification: ${err.message || String(err)}`);
+      setStatusType('error');
+      setStatusMessage(`Error during batch notification: ${err.message || String(err)}`);
     } finally {
       setIsSending(false);
     }
@@ -131,6 +283,34 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Notice if not computed */}
+      {!hasComputed && (
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-indigo-200 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xs">
+          <div className="flex items-start gap-3">
+            <div className="p-2.5 rounded-xl bg-indigo-600 text-white shadow-sm shrink-0">
+              <Mail className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm sm:text-base font-bold text-slate-900">
+                Market Equilibrium Not Yet Computed
+              </h3>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Participant transaction confirmation emails require computed nodal Market Clearing Prices and awarded dispatch obligations.
+              </p>
+            </div>
+          </div>
+          {onRunCompute && (
+            <button
+              onClick={onRunCompute}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-sm transition-all active:scale-95 cursor-pointer shrink-0"
+            >
+              <Cpu className="w-4 h-4 text-amber-300" />
+              <span>Compute Market First</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Metric Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
@@ -160,7 +340,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
           <div className="text-2xl font-extrabold font-mono text-amber-600">
             {withoutEmailCount}
           </div>
-          <p className="text-xs text-slate-500 mt-1">Requires manual distribution</p>
+          <p className="text-xs text-slate-500 mt-1">Can be added via inline edit</p>
         </div>
 
         <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs">
@@ -190,15 +370,15 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
             <button
               type="button"
               onClick={() => setShowSmtpConfig(!showSmtpConfig)}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs cursor-pointer"
             >
               <span>⚙ {showSmtpConfig ? 'Hide SMTP Config' : 'Custom SMTP / App Password'}</span>
             </button>
 
             <button
               onClick={() => handleSendBatch(true)}
-              disabled={isSending}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs disabled:opacity-50"
+              disabled={isSending || !hasComputed}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs disabled:opacity-50 cursor-pointer"
             >
               <Play className="w-3.5 h-3.5 text-indigo-600" />
               <span>Dry Run Test</span>
@@ -206,22 +386,26 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
             <button
               onClick={() => handleSendBatch(false)}
-              disabled={isSending}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-xs disabled:opacity-50"
+              disabled={isSending || !hasComputed}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
             >
-              <Send className="w-3.5 h-3.5" />
+              {isSending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
               <span>{isSending ? 'Sending...' : 'Send All Confirmations'}</span>
             </button>
           </div>
         </div>
 
+        {/* Custom SMTP Configuration Drawer */}
         {showSmtpConfig && (
           <div className="mb-4 p-4 bg-indigo-50/50 border border-indigo-100 rounded-xl space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-xs text-indigo-950">
-                Optional: Custom Dispatcher Credentials (or configured in server .env)
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <span className="font-bold text-xs text-indigo-950 flex items-center gap-1.5">
+                <ShieldCheck className="w-4 h-4 text-indigo-600" />
+                <span>SMTP Dispatch Credentials (Gmail App Password)</span>
               </span>
-              <span className="text-[10px] text-slate-500">Google App Password (16 characters)</span>
+              <span className="text-[11px] text-slate-500">
+                Generate at: <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener noreferrer" className="text-indigo-600 underline font-semibold">Google Account &gt; Security &gt; App Passwords</a>
+              </span>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
               <div>
@@ -230,27 +414,82 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                   type="email"
                   value={senderEmail}
                   onChange={(e) => setSenderEmail(e.target.value)}
-                  placeholder="e.g. sender@gmail.com"
+                  placeholder="e.g. neupanesandeep500@gmail.com"
                   className="w-full p-2 bg-white border border-slate-200 rounded-lg outline-none font-mono text-xs focus:border-indigo-600"
                 />
               </div>
               <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">App Password</label>
+                <label className="text-[11px] font-semibold text-slate-700 block mb-1">16-Character Google App Password</label>
                 <input
                   type="password"
                   value={appPassword}
                   onChange={(e) => setAppPassword(e.target.value)}
-                  placeholder="16-character Google App Password"
+                  placeholder="16-character password (e.g. kroetysmnrlvzomr)"
                   className="w-full p-2 bg-white border border-slate-200 rounded-lg outline-none font-mono text-xs focus:border-indigo-600"
                 />
               </div>
             </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={handleTestSmtp}
+                disabled={isVerifyingSmtp}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600 text-white font-semibold text-xs hover:bg-indigo-700 disabled:opacity-50 cursor-pointer shadow-2xs"
+              >
+                {isVerifyingSmtp ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>{isVerifyingSmtp ? 'Testing Connection...' : 'Test SMTP Connection'}</span>
+              </button>
+
+              {smtpVerifyResult && (
+                <div
+                  className={`text-xs font-medium flex items-center gap-1.5 ${
+                    smtpVerifyResult.success ? 'text-emerald-700 font-bold' : 'text-rose-600'
+                  }`}
+                >
+                  {smtpVerifyResult.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-600" />
+                  )}
+                  <span>{smtpVerifyResult.message}</span>
+                </div>
+              )}
+            </div>
           </div>
         )}
 
+        {/* Status Message */}
         {statusMessage && (
-          <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs font-medium text-slate-800 mb-4 flex items-center justify-between">
-            <span>{statusMessage}</span>
+          <div
+            className={`p-3 rounded-xl border text-xs font-medium mb-4 flex items-center justify-between ${
+              statusType === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : statusType === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-900'
+                : 'bg-slate-50 border-slate-200 text-slate-800'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {statusType === 'success' ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+              ) : statusType === 'error' ? (
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+              ) : (
+                <Loader2 className="w-4 h-4 text-indigo-600 shrink-0 animate-spin" />
+              )}
+              <span>{statusMessage}</span>
+            </div>
+            <button
+              onClick={() => setStatusMessage(null)}
+              className="text-xs font-bold underline opacity-70 hover:opacity-100 cursor-pointer"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -264,52 +503,147 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                 <th className="p-3">Email Address</th>
                 <th className="p-3 text-right">Awarded (MW)</th>
                 <th className="p-3 text-right">Settlement (NRs)</th>
-                <th className="p-3 text-center">Preview</th>
+                <th className="p-3 text-center">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {participantSummaries.map((p, idx) => (
-                <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                  <td className="p-3 font-semibold text-slate-800">{p.name}</td>
-                  <td className="p-3 text-center">
-                    <span
-                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        p.role === 'buyer' ? 'bg-blue-100 text-blue-800' : 'bg-rose-100 text-rose-800'
-                      }`}
-                    >
-                      {p.role === 'buyer' ? 'Buyer' : 'Seller'}
-                    </span>
-                  </td>
-                  <td className="p-3 font-mono text-slate-600">
-                    {p.email && p.email.includes('@') ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-                        <span>Registered Notification Channel</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-500">
-                        <AlertCircle className="w-3 h-3 text-amber-500" />
-                        <span>No Notification Channel</span>
-                      </span>
-                    )}
-                  </td>
-                  <td className="p-3 text-right font-mono font-bold text-slate-900">
-                    {p.actual_dispatch_drawl_mw.toFixed(3)} MW
-                  </td>
-                  <td className="p-3 text-right font-mono font-extrabold text-emerald-700">
-                    NRs {p.total_settlement_nrs.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                  </td>
-                  <td className="p-3 text-center">
-                    <button
-                      onClick={() => onPreviewEmail(p)}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Preview Email</span>
-                    </button>
+              {participantSummaries.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center text-slate-400">
+                    No participants found. Make sure participant bids/offers are loaded.
                   </td>
                 </tr>
-              ))}
+              ) : (
+                participantSummaries.map((p, idx) => {
+                  const hasEmail = Boolean(p.email && p.email.includes('@'));
+                  const slotData = collectParticipantSlotData(
+                    p.name,
+                    p.role,
+                    buyers,
+                    sellers,
+                    results,
+                    nSlots
+                  );
+                  const emailObj = buildParticipantEmail(
+                    p.name,
+                    p.role,
+                    slotData,
+                    sessionLabel,
+                    clearedCount,
+                    nSlots
+                  );
+                  const mailtoLink = generateMailtoLink(p.email || '', emailObj.subject, emailObj.text);
+
+                  return (
+                    <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                      <td className="p-3 font-semibold text-slate-800">{p.name}</td>
+                      <td className="p-3 text-center">
+                        <span
+                          className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            p.role === 'buyer' ? 'bg-blue-100 text-blue-800' : 'bg-rose-100 text-rose-800'
+                          }`}
+                        >
+                          {p.role === 'buyer' ? 'Buyer' : 'Seller'}
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        {editingName === p.name ? (
+                          <div className="flex items-center gap-1">
+                            <input
+                              type="email"
+                              value={tempEmail}
+                              onChange={(e) => setTempEmail(e.target.value)}
+                              placeholder="Enter email address"
+                              className="p-1 px-2 text-xs border border-indigo-300 rounded font-mono w-56 focus:outline-indigo-600 bg-white"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => saveEmailEdit(p.name)}
+                              className="p-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded cursor-pointer"
+                              title="Save Email"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => setEditingName(null)}
+                              className="p-1 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded cursor-pointer"
+                              title="Cancel"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 group">
+                            {hasEmail ? (
+                              <span className="font-mono text-slate-800 font-medium">
+                                {p.email}
+                              </span>
+                            ) : (
+                              <span className="text-amber-600 italic font-sans text-[11px] flex items-center gap-1">
+                                <AlertCircle className="w-3 h-3 text-amber-500" />
+                                <span>No Email Provided</span>
+                              </span>
+                            )}
+                            <button
+                              onClick={() => startEditEmail(p)}
+                              className="opacity-40 group-hover:opacity-100 p-0.5 hover:text-indigo-600 transition-opacity cursor-pointer"
+                              title="Edit recipient email"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3 text-right font-mono font-bold text-slate-900">
+                        {p.actual_dispatch_drawl_mw.toFixed(3)} MW
+                      </td>
+                      <td className="p-3 text-right font-mono font-extrabold text-emerald-700">
+                        NRs {p.total_settlement_nrs.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="p-3 text-center">
+                        <div className="inline-flex items-center gap-1.5">
+                          {/* Preview Email */}
+                          <button
+                            onClick={() => onPreviewEmail(p)}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-indigo-700 hover:text-indigo-900 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors cursor-pointer"
+                            title="Preview formatted HTML notification"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Preview</span>
+                          </button>
+
+                          {/* Direct Send */}
+                          <button
+                            onClick={() => handleSendSingle(p)}
+                            disabled={sendingRowName === p.name || !hasComputed}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
+                            title="Send confirmation email directly via SMTP"
+                          >
+                            {sendingRowName === p.name ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Send className="w-3.5 h-3.5" />
+                            )}
+                            <span>Send</span>
+                          </button>
+
+                          {/* Open Mail App */}
+                          <a
+                            href={mailtoLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+                            title="Open in your default mail app (Outlook, Apple Mail, Gmail)"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            <span>Mail App</span>
+                          </a>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
@@ -321,7 +655,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
               <h3 className="text-sm font-bold text-slate-900">Dispatch Audit Log</h3>
               <button
                 onClick={exportEmailLogCSV}
-                className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs"
+                className="flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
                 <span>Export Log CSV</span>
@@ -337,6 +671,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                     <th className="p-2.5 text-center">Status</th>
                     <th className="p-2.5 text-right">Awarded (MW)</th>
                     <th className="p-2.5 text-right">Amount (NRs)</th>
+                    <th className="p-2.5">Message / Error</th>
                     <th className="p-2.5">Timestamp</th>
                   </tr>
                 </thead>
@@ -344,7 +679,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                   {logs.map((log, i) => (
                     <tr key={i} className="hover:bg-slate-50">
                       <td className="p-2.5 font-sans font-medium text-slate-800">{log.name}</td>
-                      <td className="p-2.5 text-slate-500">{log.email || '—'}</td>
+                      <td className="p-2.5 text-slate-600">{log.email || '—'}</td>
                       <td className="p-2.5 text-center font-sans">
                         <span
                           className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -369,6 +704,9 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                       <td className="p-2.5 text-right font-bold text-slate-900">{log.awarded_mw.toFixed(3)}</td>
                       <td className="p-2.5 text-right font-bold text-emerald-700">
                         {log.amount_nrs.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="p-2.5 text-slate-500 text-[11px] font-sans truncate max-w-xs">
+                        {log.error || (log.status === 'sent' ? 'Delivered to SMTP host' : '—')}
                       </td>
                       <td className="p-2.5 text-slate-400 text-[11px] font-sans">
                         {log.sent_at ? new Date(log.sent_at).toLocaleTimeString() : '—'}

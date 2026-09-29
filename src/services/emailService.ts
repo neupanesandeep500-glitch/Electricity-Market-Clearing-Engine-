@@ -359,6 +359,65 @@ Generated: ${nowStr}
 }
 
 /**
+ * Verify SMTP connection
+ */
+export async function verifySmtpConnection(smtpCredentials?: {
+  sender?: string;
+  password?: string;
+}): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/verify-smtp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(smtpCredentials || {}),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
+/**
+ * Send single individual email notification
+ */
+export async function sendSingleNotification(
+  job: {
+    to: string;
+    subject: string;
+    html: string;
+    text: string;
+  },
+  smtpCredentials?: { sender?: string; password?: string }
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch('/api/send-single-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...job, smtpCredentials }),
+    });
+    const data = await res.json();
+    return data;
+  } catch (err: any) {
+    return { success: false, error: err.message || String(err) };
+  }
+}
+
+/**
+ * Generate a mailto: link for one-click opening in native email client or webmail
+ */
+export function generateMailtoLink(
+  to: string,
+  subject: string,
+  bodyText: string
+): string {
+  const encTo = encodeURIComponent(to || '');
+  const encSubject = encodeURIComponent(subject || '');
+  const encBody = encodeURIComponent(bodyText || '');
+  return `mailto:${encTo}?subject=${encSubject}&body=${encBody}`;
+}
+
+/**
  * Trigger batch email notification dispatch via server API or dry-run
  */
 export async function sendBatchNotifications(
@@ -385,20 +444,32 @@ export async function sendBatchNotifications(
     if (res.ok) {
       const data = await res.json();
       return data.logs;
+    } else {
+      const errData = await res.json().catch(() => ({}));
+      const errorMsg = errData.error || `Server responded with status ${res.status}`;
+      return jobs.map((job) => ({
+        name: job.name,
+        role: job.role,
+        email: job.email,
+        status: job.email && job.email.includes('@') ? (dryRun ? 'dry_run' : 'failed') : 'no_email',
+        attempts: 1,
+        error: errorMsg,
+        awarded_mw: job.awarded_mw,
+        amount_nrs: job.amount_nrs,
+        sent_at: '',
+      }));
     }
-  } catch {
-    // server route not reachable, provide simulated dry-run log
+  } catch (fetchErr: any) {
+    return jobs.map((job) => ({
+      name: job.name,
+      role: job.role,
+      email: job.email,
+      status: dryRun ? (job.email ? 'dry_run' : 'no_email') : 'failed',
+      attempts: 1,
+      error: dryRun ? undefined : (fetchErr.message || 'Network error reaching email dispatch service'),
+      awarded_mw: job.awarded_mw,
+      amount_nrs: job.amount_nrs,
+      sent_at: dryRun ? new Date().toISOString() : '',
+    }));
   }
-
-  // Fallback client simulation log
-  return jobs.map((job) => ({
-    name: job.name,
-    role: job.role,
-    email: job.email,
-    status: job.email && job.email.includes('@') ? (dryRun ? 'dry_run' : 'sent') : 'no_email',
-    attempts: job.email && job.email.includes('@') ? 1 : 0,
-    awarded_mw: job.awarded_mw,
-    amount_nrs: job.amount_nrs,
-    sent_at: new Date().toISOString(),
-  }));
 }

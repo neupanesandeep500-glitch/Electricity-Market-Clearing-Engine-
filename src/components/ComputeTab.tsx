@@ -106,6 +106,7 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
       onRecompute();
       newLogs.push(`[${new Date().toLocaleTimeString()}] Solved slot clearing: Market equilibrium determined.`);
       newLogs.push(`[${new Date().toLocaleTimeString()}] Settlement register & participant drawl/dispatch summaries calculated.`);
+      newLogs.push(`[${new Date().toLocaleTimeString()}] 🔒 Bids taking closed & Google Sheet auto-sync disabled to keep results and curve visualization stable.`);
       newLogs.push(`[${new Date().toLocaleTimeString()}] ✅ Market simulation completed successfully. Final results, curves, and email notices are now active.`);
       setComputationLog(newLogs);
       setIsComputing(false);

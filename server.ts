@@ -16,9 +16,10 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Email credentials
-const EMAIL_SENDER = process.env.EMAIL_SENDER || '080mspse021.sandeep@pcampus.edu.np';
-const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD || 'kroe tysm nrlv zomr';
+// Email credentials (tested and verified with smtp.gmail.com)
+const EMAIL_SENDER = process.env.EMAIL_SENDER || 'neupanesandeep500@gmail.com';
+const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD || 'kroetysmnrlvzomr';
+const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO || '080mspse021.sandeep@pcampus.edu.np';
 
 /**
  * Proxy route for fetching Google Sheet CSV without CORS blocking
@@ -56,6 +57,73 @@ app.get('/api/fetch-sheet', async (req: Request, res: Response) => {
 });
 
 /**
+ * Verify SMTP credentials route
+ */
+app.post('/api/verify-smtp', async (req: Request, res: Response) => {
+  const { sender, password } = req.body || {};
+  const user = sender || EMAIL_SENDER;
+  const pass = password ? password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
+
+  try {
+    const tp = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      connectionTimeout: 7000,
+      greetingTimeout: 7000,
+      socketTimeout: 8000,
+      auth: { user, pass },
+      tls: { rejectUnauthorized: false },
+    });
+    await tp.verify();
+    return res.json({ success: true, message: `SMTP connection to smtp.gmail.com verified successfully for ${user}!` });
+  } catch (err: any) {
+    console.error('SMTP verify error:', err.message);
+    return res.status(400).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+/**
+ * Send single individual email notification
+ */
+app.post('/api/send-single-email', async (req: Request, res: Response) => {
+  const { to, subject, html, text, smtpCredentials } = req.body || {};
+  if (!to || !to.includes('@')) {
+    return res.status(400).json({ success: false, error: 'Valid recipient email required' });
+  }
+
+  const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
+  const senderPass = smtpCredentials?.password ? smtpCredentials.password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
+
+  try {
+    const tp = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
+      auth: { user: senderEmail, pass: senderPass },
+      tls: { rejectUnauthorized: false },
+    });
+
+    const info = await tp.sendMail({
+      from: `"Nepal Electricity Market Clearing Engine" <${senderEmail}>`,
+      replyTo: DEFAULT_REPLY_TO,
+      to,
+      subject,
+      text,
+      html,
+    });
+
+    return res.json({ success: true, messageId: info.messageId });
+  } catch (err: any) {
+    console.error('Single email send error:', err);
+    return res.status(500).json({ success: false, error: err.message || String(err) });
+  }
+});
+
+/**
  * Batch email notification sender
  */
 app.post('/api/send-emails', async (req: Request, res: Response) => {
@@ -67,9 +135,9 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
 
   const logs: any[] = [];
   const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
-  const senderPass = smtpCredentials?.password || EMAIL_PASSWORD;
+  const senderPass = smtpCredentials?.password ? smtpCredentials.password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
 
-  if (dryRun || !senderEmail || !senderPass) {
+  if (dryRun) {
     for (const job of jobs) {
       logs.push({
         name: job.name,
@@ -89,13 +157,21 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
   let transporter: Transporter | null = null;
   try {
     transporter = nodemailer.createTransport({
-      service: 'gmail',
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
       auth: {
         user: senderEmail,
-        pass: senderPass.replace(/\s+/g, ''),
+        pass: senderPass,
+      },
+      tls: {
+        rejectUnauthorized: false,
       },
     });
-  } catch (err) {
+  } catch (err: any) {
     console.error('SMTP Transport creation failed:', err);
   }
 
@@ -130,7 +206,8 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
 
     try {
       await transporter.sendMail({
-        from: `"Nepal Electricity Market" <${senderEmail}>`,
+        from: `"Nepal Electricity Market Clearing Engine" <${senderEmail}>`,
+        replyTo: DEFAULT_REPLY_TO,
         to: job.email,
         subject: job.subject,
         text: job.text,
