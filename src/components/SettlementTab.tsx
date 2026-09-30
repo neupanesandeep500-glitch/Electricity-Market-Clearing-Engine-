@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { SettlementRecord } from '../types';
-import { DollarSign, Download, Search, CheckCircle, AlertTriangle, AlertCircle, Clock, Cpu } from 'lucide-react';
+import { SettlementRecord, SlotClearingResult, ParticipantSummaryItem } from '../types';
+import { generateMarketReportPDF } from '../services/pdfReportService';
+import { DollarSign, Download, Search, CheckCircle, AlertTriangle, AlertCircle, Clock, Cpu, FileText } from 'lucide-react';
 
 interface SettlementTabProps {
   settlementRecords: SettlementRecord[];
@@ -8,6 +9,10 @@ interface SettlementTabProps {
   totalBuyers?: number;
   totalSellers?: number;
   onRunCompute?: () => void;
+  results?: Record<number, SlotClearingResult>;
+  participantSummaries?: ParticipantSummaryItem[];
+  nSlots?: number;
+  sessionLabel?: string;
 }
 
 export const SettlementTab: React.FC<SettlementTabProps> = ({
@@ -16,6 +21,10 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({
   totalBuyers = 0,
   totalSellers = 0,
   onRunCompute,
+  results = {},
+  participantSummaries = [],
+  nSlots = 4,
+  sessionLabel = 'NEM Session',
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'all' | 'Buyer' | 'Seller'>('all');
@@ -220,7 +229,28 @@ export const SettlementTab: React.FC<SettlementTabProps> = ({
               </button>
             </div>
 
-            {/* Export Button */}
+            {/* PDF Report Export Button */}
+            <button
+              onClick={() =>
+                generateMarketReportPDF({
+                  results,
+                  settlements: settlementRecords,
+                  participantSummaries,
+                  nSlots,
+                  sessionLabel,
+                  totalBuyers,
+                  totalSellers,
+                })
+              }
+              disabled={!isCalculated}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+              title="Download official settlement and dispatch report as PDF in 1 click"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Download PDF</span>
+            </button>
+
+            {/* Export CSV Button */}
             <button
               onClick={exportSettlementCSV}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs shrink-0"

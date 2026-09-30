@@ -56,30 +56,37 @@ app.get('/api/fetch-sheet', async (req: Request, res: Response) => {
   return res.status(502).send('Failed to retrieve spreadsheet data from Google Sheets');
 });
 
+function getMailTransporter(user: string, pass: string): Transporter {
+  // Use service: 'gmail' for optimal compatibility on cloud environments (Render, GCP, AWS)
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: { user, pass },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+    tls: { rejectUnauthorized: false },
+  });
+}
+
 /**
  * Verify SMTP credentials route
  */
 app.post('/api/verify-smtp', async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const { sender, password } = req.body || {};
   const user = sender || EMAIL_SENDER;
   const pass = password ? password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
 
   try {
-    const tp = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      connectionTimeout: 7000,
-      greetingTimeout: 7000,
-      socketTimeout: 8000,
-      auth: { user, pass },
-      tls: { rejectUnauthorized: false },
-    });
+    const tp = getMailTransporter(user, pass);
     await tp.verify();
-    return res.json({ success: true, message: `SMTP connection to smtp.gmail.com verified successfully for ${user}!` });
+    return res.json({ success: true, message: `SMTP connection to Gmail verified successfully for ${user}!` });
   } catch (err: any) {
     console.error('SMTP verify error:', err.message);
-    return res.status(400).json({ success: false, error: err.message || String(err) });
+    return res.json({
+      success: false,
+      error: `SMTP verification failed: ${err.message || String(err)}. Check App Password or use direct "Open in Mail Client".`,
+    });
   }
 });
 
@@ -87,25 +94,17 @@ app.post('/api/verify-smtp', async (req: Request, res: Response) => {
  * Send single individual email notification
  */
 app.post('/api/send-single-email', async (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const { to, subject, html, text, smtpCredentials } = req.body || {};
   if (!to || !to.includes('@')) {
-    return res.status(400).json({ success: false, error: 'Valid recipient email required' });
+    return res.json({ success: false, error: 'Valid recipient email required' });
   }
 
   const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
   const senderPass = smtpCredentials?.password ? smtpCredentials.password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
 
   try {
-    const tp = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      connectionTimeout: 8000,
-      greetingTimeout: 8000,
-      socketTimeout: 10000,
-      auth: { user: senderEmail, pass: senderPass },
-      tls: { rejectUnauthorized: false },
-    });
+    const tp = getMailTransporter(senderEmail, senderPass);
 
     const info = await tp.sendMail({
       from: `"Nepal Electricity Market Clearing Engine" <${senderEmail}>`,
@@ -119,7 +118,10 @@ app.post('/api/send-single-email', async (req: Request, res: Response) => {
     return res.json({ success: true, messageId: info.messageId });
   } catch (err: any) {
     console.error('Single email send error:', err);
-    return res.status(500).json({ success: false, error: err.message || String(err) });
+    return res.json({
+      success: false,
+      error: `Email delivery issue: ${err.message || String(err)}. You can click "Open in Mail Client" to send instantly via Gmail/Outlook.`,
+    });
   }
 });
 
@@ -127,10 +129,11 @@ app.post('/api/send-single-email', async (req: Request, res: Response) => {
  * Batch email notification sender
  */
 app.post('/api/send-emails', async (req: Request, res: Response) => {
-  const { jobs, dryRun, smtpCredentials } = req.body;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  const { jobs, dryRun, smtpCredentials } = req.body || {};
 
   if (!jobs || !Array.isArray(jobs)) {
-    return res.status(400).json({ error: 'jobs array required' });
+    return res.json({ success: false, error: 'jobs array required', logs: [] });
   }
 
   const logs: any[] = [];
@@ -156,21 +159,7 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
   // Live SMTP sending
   let transporter: Transporter | null = null;
   try {
-    transporter = nodemailer.createTransport({
-      host: 'smtp.gmail.com',
-      port: 465,
-      secure: true,
-      connectionTimeout: 8000,
-      greetingTimeout: 8000,
-      socketTimeout: 10000,
-      auth: {
-        user: senderEmail,
-        pass: senderPass,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-    });
+    transporter = getMailTransporter(senderEmail, senderPass);
   } catch (err: any) {
     console.error('SMTP Transport creation failed:', err);
   }
@@ -197,7 +186,7 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
         email: job.email,
         status: 'failed',
         attempts: 1,
-        error: 'SMTP transporter uninitialized',
+        error: 'SMTP transporter uninitialized. Check App Password or use "Open in Mail Client".',
         awarded_mw: job.awarded_mw,
         amount_nrs: job.amount_nrs,
       });
@@ -275,8 +264,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, () => {
-    console.log(`⚡ Server running at http://localhost:${PORT}`);
+  app.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`⚡ Server running at http://0.0.0.0:${PORT} (Port ${PORT})`);
   });
 }
 

@@ -12,6 +12,7 @@ import {
   buildParticipantEmail,
   sendBatchNotifications,
 } from '../services/emailService';
+import { generateMarketReportPDF } from '../services/pdfReportService';
 import {
   Cpu,
   Play,
@@ -28,6 +29,7 @@ import {
   Sparkles,
   ArrowRight,
   MailCheck,
+  FileText,
 } from 'lucide-react';
 
 interface ComputeTabProps {
@@ -326,7 +328,26 @@ export const ComputeTab: React.FC<ComputeTabProps> = ({
 
           {/* Quick jump actions after compute */}
           <div className="flex items-center gap-2 mt-4 pt-3 border-t border-slate-800/80 flex-wrap text-xs">
-            <span className="text-slate-400 font-medium">Inspect Results:</span>
+            <span className="text-slate-400 font-medium">Market Output:</span>
+            <button
+              onClick={() =>
+                generateMarketReportPDF({
+                  results,
+                  settlements: settlementRecords,
+                  participantSummaries,
+                  nSlots,
+                  sessionLabel,
+                  totalBuyers: buyers.length,
+                  totalSellers: sellers.length,
+                })
+              }
+              disabled={!hasComputed}
+              className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-40"
+              title="Download full market report as PDF in 1 click"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Download PDF Report</span>
+            </button>
             <button
               onClick={onViewOverview}
               className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-semibold transition-colors flex items-center gap-1"

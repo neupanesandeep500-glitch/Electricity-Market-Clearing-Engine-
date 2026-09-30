@@ -359,6 +359,32 @@ Generated: ${nowStr}
 }
 
 /**
+ * Safe JSON parser helper to prevent "Unexpected end of JSON input" errors
+ */
+async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; data?: T; error?: string }> {
+  try {
+    const text = await res.text();
+    if (!text || !text.trim()) {
+      return {
+        ok: false,
+        error: `Empty response from server (HTTP ${res.status}). The outbound email service may have timed out or been throttled.`,
+      };
+    }
+    try {
+      const parsed = JSON.parse(text);
+      return { ok: res.ok && parsed.success !== false, data: parsed, error: parsed.error };
+    } catch {
+      return {
+        ok: false,
+        error: `Server returned non-JSON response (HTTP ${res.status}): ${text.slice(0, 120)}`,
+      };
+    }
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Network stream reading error' };
+  }
+}
+
+/**
  * Verify SMTP connection
  */
 export async function verifySmtpConnection(smtpCredentials?: {
@@ -368,11 +394,14 @@ export async function verifySmtpConnection(smtpCredentials?: {
   try {
     const res = await fetch('/api/verify-smtp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(smtpCredentials || {}),
     });
-    const data = await res.json();
-    return data;
+    const parsed = await parseJsonSafely(res);
+    if (parsed.data) {
+      return parsed.data;
+    }
+    return { success: false, error: parsed.error || 'Verification failed' };
   } catch (err: any) {
     return { success: false, error: err.message || String(err) };
   }
@@ -393,13 +422,22 @@ export async function sendSingleNotification(
   try {
     const res = await fetch('/api/send-single-email', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ ...job, smtpCredentials }),
     });
-    const data = await res.json();
-    return data;
+    const parsed = await parseJsonSafely(res);
+    if (parsed.data) {
+      return parsed.data;
+    }
+    return {
+      success: false,
+      error: parsed.error || 'Server returned an invalid response. You can click "Open in Mail Client" to send directly.',
+    };
   } catch (err: any) {
-    return { success: false, error: err.message || String(err) };
+    return {
+      success: false,
+      error: `${err.message || String(err)}. You can click "Open in Mail Client" to send directly.`,
+    };
   }
 }
 
@@ -437,16 +475,15 @@ export async function sendBatchNotifications(
   try {
     const res = await fetch('/api/send-emails', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({ jobs, dryRun, smtpCredentials }),
     });
 
-    if (res.ok) {
-      const data = await res.json();
-      return data.logs;
+    const parsed = await parseJsonSafely(res);
+    if (parsed.data && parsed.data.logs) {
+      return parsed.data.logs;
     } else {
-      const errData = await res.json().catch(() => ({}));
-      const errorMsg = errData.error || `Server responded with status ${res.status}`;
+      const errorMsg = parsed.error || parsed.data?.error || `Server responded with status ${res.status}`;
       return jobs.map((job) => ({
         name: job.name,
         role: job.role,
@@ -466,7 +503,7 @@ export async function sendBatchNotifications(
       email: job.email,
       status: dryRun ? (job.email ? 'dry_run' : 'no_email') : 'failed',
       attempts: 1,
-      error: dryRun ? undefined : (fetchErr.message || 'Network error reaching email dispatch service'),
+      error: dryRun ? undefined : (fetchErr.message || 'Network error reaching email dispatch service. Try "Open in Mail Client".'),
       awarded_mw: job.awarded_mw,
       amount_nrs: job.amount_nrs,
       sent_at: dryRun ? new Date().toISOString() : '',

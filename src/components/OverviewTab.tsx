@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { SlotClearingResult } from '../types';
+import { SlotClearingResult, SettlementRecord, ParticipantSummaryItem } from '../types';
+import { generateMarketReportPDF } from '../services/pdfReportService';
 import {
   BarChart3,
   TrendingUp,
@@ -10,6 +11,10 @@ import {
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Zap,
+  Activity,
+  Layers,
+  FileText,
 } from 'lucide-react';
 
 interface OverviewTabProps {
@@ -19,6 +24,9 @@ interface OverviewTabProps {
   totalBuyers?: number;
   totalSellers?: number;
   onRunCompute?: () => void;
+  settlements?: SettlementRecord[];
+  participantSummaries?: ParticipantSummaryItem[];
+  sessionLabel?: string;
 }
 
 export const OverviewTab: React.FC<OverviewTabProps> = ({
@@ -28,26 +36,58 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   totalBuyers = 0,
   totalSellers = 0,
   onRunCompute,
+  settlements = [],
+  participantSummaries = [],
+  sessionLabel = 'NEM Session',
 }) => {
-  const [chartZoom, setChartZoom] = useState<number>(1);
-  const [hoveredSlot, setHoveredSlot] = useState<number | null>(null);
+  // Independent zoom states for the two separated charts
+  const [mcpZoom, setMcpZoom] = useState<number>(1);
+  const [mcvZoom, setMcvZoom] = useState<number>(1);
+
+  // Independent hover states
+  const [hoveredMcpSlot, setHoveredMcpSlot] = useState<number | null>(null);
+  const [hoveredMcvSlot, setHoveredMcvSlot] = useState<number | null>(null);
 
   const slotsList = Array.from({ length: nSlots }, (_, i) => i + 1);
   const hasParticipants = totalBuyers > 0 || totalSellers > 0;
   const isCalculated = hasComputed && hasParticipants;
 
-  // Zoom handlers for overview chart
-  const handleZoomIn = () => setChartZoom((prev) => Math.min(2.5, Number((prev + 0.25).toFixed(2))));
-  const handleZoomOut = () => setChartZoom((prev) => Math.max(1, Number((prev - 0.25).toFixed(2))));
-  const handleResetZoom = () => {
-    setChartZoom(1);
-    setHoveredSlot(null);
+  // Zoom handlers for MCP chart
+  const handleMcpZoomIn = () => setMcpZoom((prev) => Math.min(2.5, Number((prev + 0.25).toFixed(2))));
+  const handleMcpZoomOut = () => setMcpZoom((prev) => Math.max(1, Number((prev - 0.25).toFixed(2))));
+  const handleMcpResetZoom = () => {
+    setMcpZoom(1);
+    setHoveredMcpSlot(null);
   };
 
-  // Compute maximum values for bar scaling
-  const maxMcp = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.mcp || 0 : 0)), 10);
-  const maxMw = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.mcv_mw || 0 : 0)), 100);
-  const maxMv = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.market_value || 0 : 0)), 500000);
+  // Zoom handlers for MCV chart
+  const handleMcvZoomIn = () => setMcvZoom((prev) => Math.min(2.5, Number((prev + 0.25).toFixed(2))));
+  const handleMcvZoomOut = () => setMcvZoom((prev) => Math.max(1, Number((prev - 0.25).toFixed(2))));
+  const handleMcvResetZoom = () => {
+    setMcvZoom(1);
+    setHoveredMcvSlot(null);
+  };
+
+  // Compute maximum values and tick scales
+  const clearedSlots = slotsList.filter((s) => isCalculated && results[s]?.status === 'Cleared');
+  const rawMaxMcp = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.mcp || 0 : 0)), 8);
+  const rawMaxMw = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.mcv_mw || 0 : 0)), 50);
+  const rawMaxMv = Math.max(...slotsList.map((s) => (isCalculated ? results[s]?.market_value || 0 : 0)), 100000);
+
+  // Nice rounded upper bounds for clean integer ticks
+  const maxMcp = Math.ceil(rawMaxMcp / 2) * 2 || 10;
+  const maxMw = Math.ceil(rawMaxMw / 10) * 10 || 50;
+  const maxMv = Math.ceil(rawMaxMv / 50000) * 50000 || 200000;
+
+  // Summary statistics for badges
+  const avgMcp = clearedSlots.length > 0
+    ? clearedSlots.reduce((acc, s) => acc + (results[s]?.mcp || 0), 0) / clearedSlots.length
+    : 0;
+  const peakMw = clearedSlots.length > 0
+    ? Math.max(...clearedSlots.map((s) => results[s]?.mcv_mw || 0))
+    : 0;
+  const totalEnergyMwh = clearedSlots.reduce((acc, s) => acc + (results[s]?.mcv_mwh || 0), 0);
+  const totalMarketTurnover = clearedSlots.reduce((acc, s) => acc + (results[s]?.market_value || 0), 0);
 
   const exportSummaryCSV = () => {
     const headers = [
@@ -86,6 +126,18 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
     link.href = URL.createObjectURL(blob);
     link.download = `market_clearing_summary_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
+  };
+
+  const handleDownloadPDF = () => {
+    generateMarketReportPDF({
+      results,
+      settlements,
+      participantSummaries,
+      nSlots,
+      sessionLabel,
+      totalBuyers,
+      totalSellers,
+    });
   };
 
   return (
@@ -151,13 +203,25 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
                 : 'Intake received — market values pending computation'}
             </p>
           </div>
-          <button
-            onClick={exportSummaryCSV}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export Summary CSV</span>
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={handleDownloadPDF}
+              disabled={!isCalculated}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-rose-600 hover:bg-rose-700 text-white transition-all shadow-xs cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Download market clearing and commercial settlement report as PDF in 1 click"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Download PDF Report</span>
+            </button>
+
+            <button
+              onClick={exportSummaryCSV}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 transition-colors shadow-2xs cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Export Summary CSV</span>
+            </button>
+          </div>
         </div>
 
         <div className="overflow-x-auto border border-slate-100 rounded-xl">
@@ -238,7 +302,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
         </div>
       </div>
 
-      {/* Visual Trends Breakdown */}
+      {/* Visual Trends Breakdown - TWO TOTALLY SEPARATE CHARTS (MCP and MCV) */}
       {!isCalculated ? (
         <div className="bg-white border border-slate-200/90 rounded-2xl p-8 text-center shadow-xs">
           <div className="w-12 h-12 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3">
@@ -252,7 +316,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
             {!hasParticipants
               ? 'No valid participant bids or offers are present in the Google Sheet. Data values are shown as —.'
-              : `${totalBuyers} buyer bids and ${totalSellers} seller offers are loaded. Run the computation in the Compute tab to plot Market Clearing Price (MCP) & Dispatched MW charts.`}
+              : `${totalBuyers} buyer bids and ${totalSellers} seller offers are loaded. Run the computation in the Compute tab to plot separate Market Clearing Price (MCP) & Dispatched MW charts.`}
           </p>
           {hasParticipants && onRunCompute && (
             <button
@@ -265,249 +329,555 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Trend 1: MCP & MW Volume by Slot - Dual Column Chart with Dynamic Zoom & Hover */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs relative">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
-            <div className="flex items-center gap-2">
-              <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
-                <TrendingUp className="w-4 h-4" />
-              </div>
+        <div className="space-y-6">
+          {/* Grid of Two Dedicated Charts: Left = MCP (NRs/kWh), Right = MCV (MW) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            {/* ========================================================= */}
+            {/* CHART 1: TOTALLY SEPARATE MARKET CLEARING PRICE (MCP) */}
+            {/* ========================================================= */}
+            <div className="bg-white border border-amber-200/80 rounded-2xl p-5 shadow-xs relative flex flex-col justify-between">
               <div>
-                <h3 className="text-sm font-bold text-slate-900">
-                  Market Clearing Price &amp; Dispatched MW
-                </h3>
-                <p className="text-xs text-slate-500">Dynamic comparison with hover tooltip &amp; zoom</p>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 shadow-2xs">
+                      <TrendingUp className="w-4 h-4 text-amber-600" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-extrabold text-slate-900">
+                          Market Clearing Price (MCP)
+                        </h3>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-amber-100 text-amber-900 rounded-full border border-amber-200">
+                          NRs/kWh
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">Nodal equilibrium rate per 15-minute slot</p>
+                    </div>
+                  </div>
+
+                  {/* MCP Zoom Controls */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs">
+                    <span className="px-1.5 font-mono font-bold text-slate-700 text-[10px]">
+                      {Math.round(mcpZoom * 100)}%
+                    </span>
+                    <button
+                      onClick={handleMcpZoomIn}
+                      disabled={mcpZoom >= 2.5}
+                      className="p-1 rounded bg-white text-slate-700 hover:text-amber-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                      title="Zoom In (+25%)"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={handleMcpZoomOut}
+                      disabled={mcpZoom <= 1}
+                      className="p-1 rounded bg-white text-slate-700 hover:text-amber-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                      title="Zoom Out (-25%)"
+                    >
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    {mcpZoom > 1 && (
+                      <button
+                        onClick={handleMcpResetZoom}
+                        className="p-1 rounded bg-white text-slate-700 hover:text-amber-900 hover:bg-slate-50 border border-slate-200 cursor-pointer shadow-2xs"
+                        title="Reset Zoom"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* MCP Metrics Ribbon */}
+                <div className="grid grid-cols-3 gap-2 mb-3 p-2.5 bg-amber-50/50 rounded-xl border border-amber-100 text-xs">
+                  <div>
+                    <span className="text-[10px] text-amber-800 block uppercase font-bold">Avg MCP</span>
+                    <strong className="font-mono text-amber-950 font-extrabold text-sm">
+                      NRs {avgMcp.toFixed(3)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-amber-800 block uppercase font-bold">Max MCP</span>
+                    <strong className="font-mono text-amber-700 font-extrabold text-sm">
+                      NRs {rawMaxMcp.toFixed(3)}
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-amber-800 block uppercase font-bold">Axis Upper Bound</span>
+                    <strong className="font-mono text-slate-700 font-bold text-sm">
+                      {maxMcp} NRs/kWh
+                    </strong>
+                  </div>
+                </div>
+
+                {/* Dynamic MCP Hover Tooltip */}
+                {hoveredMcpSlot !== null && results[hoveredMcpSlot] && (
+                  <div className="absolute top-28 right-6 z-20 bg-slate-900/95 text-white backdrop-blur-md rounded-xl p-3 shadow-xl border border-amber-500/40 text-xs font-mono space-y-1 pointer-events-none animate-in fade-in duration-100">
+                    <div className="text-[11px] text-amber-400 font-sans font-bold flex items-center justify-between gap-4">
+                      <span>Slot T{hoveredMcpSlot} Rate</span>
+                      <span className="text-emerald-400">{results[hoveredMcpSlot].status}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-300 font-sans">MCP:</span>
+                      <strong className="text-amber-300 font-extrabold">NRs {results[hoveredMcpSlot].mcp.toFixed(3)} / kWh</strong>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-300 font-sans">Clearing Mode:</span>
+                      <span className="text-slate-300 text-[10px]">{results[hoveredMcpSlot].clearing_mode}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* SVG Chart for MCP */}
+                <div className="relative w-full overflow-x-auto pt-2">
+                  <svg
+                    viewBox="0 0 540 220"
+                    className="w-full h-auto min-w-[380px] select-none transition-transform duration-200"
+                    style={{ transform: `scale(${mcpZoom})`, transformOrigin: 'bottom center' }}
+                    onMouseLeave={() => setHoveredMcpSlot(null)}
+                  >
+                    {/* Y-Axis Label */}
+                    <text x="10" y="16" className="text-[10px] font-sans font-bold fill-amber-700">
+                      NRs/kWh
+                    </text>
+
+                    {/* Horizontal Y-Axis Grid Lines & Numbers */}
+                    {[1, 0.75, 0.5, 0.25, 0].map((pct, i) => {
+                      const yVal = 180 - pct * 140;
+                      const tickLabel = (pct * maxMcp).toFixed(1);
+                      return (
+                        <g key={i}>
+                          <line
+                            x1="45"
+                            y1={yVal}
+                            x2="520"
+                            y2={yVal}
+                            stroke={pct === 0 ? '#94A3B8' : '#F1F5F9'}
+                            strokeDasharray={pct === 0 ? '' : '3 3'}
+                            strokeWidth={pct === 0 ? '1.5' : '1'}
+                          />
+                          <text
+                            x="40"
+                            y={yVal + 3}
+                            textAnchor="end"
+                            className="text-[9px] font-mono font-medium fill-slate-400"
+                          >
+                            {tickLabel}
+                          </text>
+                        </g>
+                      );
+                    })}
+
+                    {/* MCP Bars per Slot */}
+                    {slotsList.map((s, idx) => {
+                      const r = results[s];
+                      const isCleared = r && r.status === 'Cleared';
+                      const mcpVal = isCleared ? r.mcp : 0;
+                      const barHeight = Math.max(isCleared ? (mcpVal / maxMcp) * 140 : 4, 4);
+
+                      const slotWidth = (520 - 55) / slotsList.length;
+                      const slotCenterX = 55 + idx * slotWidth + slotWidth / 2;
+                      const barWidth = Math.min(48, slotWidth * 0.65);
+                      const barX = slotCenterX - barWidth / 2;
+                      const barY = 180 - barHeight;
+
+                      return (
+                        <g
+                          key={s}
+                          className="cursor-pointer group"
+                          onMouseEnter={() => setHoveredMcpSlot(s)}
+                        >
+                          {/* Background hover column */}
+                          <rect
+                            x={slotCenterX - slotWidth / 2 + 2}
+                            y="25"
+                            width={slotWidth - 4}
+                            height="155"
+                            rx="8"
+                            className="fill-transparent hover:fill-amber-50/50 transition-colors"
+                          />
+
+                          {/* MCP Bar */}
+                          <rect
+                            x={barX}
+                            y={barY}
+                            width={barWidth}
+                            height={barHeight}
+                            rx="6"
+                            fill="url(#mcpAmberGradient)"
+                            stroke={isCleared ? '#B45309' : '#CBD5E1'}
+                            strokeWidth="1"
+                            className="transition-all duration-300 drop-shadow-xs"
+                          />
+
+                          {/* Value on top of bar */}
+                          <text
+                            x={slotCenterX}
+                            y={Math.max(barY - 6, 26)}
+                            textAnchor="middle"
+                            className="text-[11px] font-mono font-black fill-amber-900"
+                          >
+                            {isCleared ? `NRs ${mcpVal.toFixed(2)}` : '0'}
+                          </text>
+
+                          {/* Slot Label beneath axis */}
+                          <text
+                            x={slotCenterX}
+                            y="198"
+                            textAnchor="middle"
+                            className="text-[11px] font-mono font-bold fill-slate-800"
+                          >
+                            T{s}
+                          </text>
+
+                          {/* Status indicator dot */}
+                          <circle
+                            cx={slotCenterX}
+                            cy="208"
+                            r="3.5"
+                            fill={isCleared ? '#10B981' : '#F43F5E'}
+                          />
+                        </g>
+                      );
+                    })}
+
+                    <defs>
+                      <linearGradient id="mcpAmberGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#FBBF24" />
+                        <stop offset="100%" stopColor="#D97706" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                </div>
+              </div>
+
+              {/* MCP Slot Breakdown Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 pt-3 border-t border-slate-100">
+                {slotsList.map((s) => {
+                  const r = results[s];
+                  const isCleared = r && r.status === 'Cleared';
+                  return (
+                    <div key={s} className="bg-amber-50/40 rounded-xl p-2.5 border border-amber-100">
+                      <div className="flex items-center justify-between text-xs mb-0.5">
+                        <span className="font-extrabold font-mono text-amber-950">Slot T{s}</span>
+                        <span className={`w-2 h-2 rounded-full ${isCleared ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                      </div>
+                      <div className="text-xs font-mono font-bold text-amber-800">
+                        {isCleared ? `NRs ${r.mcp.toFixed(3)}` : 'No Trade'}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Zoom Controls & Legends */}
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <div className="flex items-center gap-2 text-[11px] font-semibold">
-                <span className="flex items-center gap-1.5 text-amber-700">
-                  <span className="w-2.5 h-2.5 rounded-sm bg-amber-500"></span> MCP
-                </span>
-                <span className="flex items-center gap-1.5 text-blue-700">
-                  <span className="w-2.5 h-2.5 rounded-sm bg-blue-600"></span> MW
-                </span>
+            {/* ========================================================= */}
+            {/* CHART 2: TOTALLY SEPARATE MARKET CLEARING VOLUME (MCV MW) */}
+            {/* ========================================================= */}
+            <div className="bg-white border border-blue-200/80 rounded-2xl p-5 shadow-xs relative flex flex-col justify-between">
+              <div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-blue-600 shadow-2xs">
+                      <BarChart3 className="w-4 h-4 text-blue-600" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-sm font-extrabold text-slate-900">
+                          Market Clearing Volume (MCV)
+                        </h3>
+                        <span className="text-[10px] font-mono font-bold px-2 py-0.5 bg-blue-100 text-blue-900 rounded-full border border-blue-200">
+                          MW
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-500">Awarded generation dispatch &amp; buyer drawl power</p>
+                    </div>
+                  </div>
+
+                  {/* MCV Zoom Controls */}
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs">
+                    <span className="px-1.5 font-mono font-bold text-slate-700 text-[10px]">
+                      {Math.round(mcvZoom * 100)}%
+                    </span>
+                    <button
+                      onClick={handleMcvZoomIn}
+                      disabled={mcvZoom >= 2.5}
+                      className="p-1 rounded bg-white text-slate-700 hover:text-blue-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                      title="Zoom In (+25%)"
+                    >
+                      <ZoomIn className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={handleMcvZoomOut}
+                      disabled={mcvZoom <= 1}
+                      className="p-1 rounded bg-white text-slate-700 hover:text-blue-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
+                      title="Zoom Out (-25%)"
+                    >
+                      <ZoomOut className="w-3.5 h-3.5" />
+                    </button>
+                    {mcvZoom > 1 && (
+                      <button
+                        onClick={handleMcvResetZoom}
+                        className="p-1 rounded bg-white text-slate-700 hover:text-blue-900 hover:bg-slate-50 border border-slate-200 cursor-pointer shadow-2xs"
+                        title="Reset Zoom"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* MCV Metrics Ribbon */}
+                <div className="grid grid-cols-3 gap-2 mb-3 p-2.5 bg-blue-50/50 rounded-xl border border-blue-100 text-xs">
+                  <div>
+                    <span className="text-[10px] text-blue-800 block uppercase font-bold">Peak Cleared</span>
+                    <strong className="font-mono text-blue-950 font-extrabold text-sm">
+                      {peakMw.toFixed(2)} MW
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-blue-800 block uppercase font-bold">Energy Volume</span>
+                    <strong className="font-mono text-blue-700 font-extrabold text-sm">
+                      {totalEnergyMwh.toFixed(3)} MWh
+                    </strong>
+                  </div>
+                  <div>
+                    <span className="text-[10px] text-blue-800 block uppercase font-bold">Axis Upper Bound</span>
+                    <strong className="font-mono text-slate-700 font-bold text-sm">
+                      {maxMw} MW
+                    </strong>
+                  </div>
+                </div>
+
+                {/* Dynamic MCV Hover Tooltip */}
+                {hoveredMcvSlot !== null && results[hoveredMcvSlot] && (
+                  <div className="absolute top-28 right-6 z-20 bg-slate-900/95 text-white backdrop-blur-md rounded-xl p-3 shadow-xl border border-blue-500/40 text-xs font-mono space-y-1 pointer-events-none animate-in fade-in duration-100">
+                    <div className="text-[11px] text-blue-400 font-sans font-bold flex items-center justify-between gap-4">
+                      <span>Slot T{hoveredMcvSlot} Volume</span>
+                      <span className="text-emerald-400">{results[hoveredMcvSlot].status}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-300 font-sans">Power (MCV):</span>
+                      <strong className="text-blue-300 font-extrabold">{results[hoveredMcvSlot].mcv_mw.toFixed(3)} MW</strong>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-300 font-sans">Energy (MWh):</span>
+                      <strong className="text-cyan-300 font-bold">{results[hoveredMcvSlot].mcv_mwh.toFixed(4)} MWh</strong>
+                    </div>
+                    <div className="flex items-center justify-between gap-4 text-[10px] text-slate-400 pt-0.5 border-t border-slate-700">
+                      <span>Req Demand: {results[hoveredMcvSlot].total_demand.toFixed(1)} MW</span>
+                      <span>Req Supply: {results[hoveredMcvSlot].total_supply.toFixed(1)} MW</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* SVG Chart for MCV */}
+                <div className="relative w-full overflow-x-auto pt-2">
+                  <svg
+                    viewBox="0 0 540 220"
+                    className="w-full h-auto min-w-[380px] select-none transition-transform duration-200"
+                    style={{ transform: `scale(${mcvZoom})`, transformOrigin: 'bottom center' }}
+                    onMouseLeave={() => setHoveredMcvSlot(null)}
+                  >
+                    {/* Y-Axis Label */}
+                    <text x="10" y="16" className="text-[10px] font-sans font-bold fill-blue-700">
+                      MW Power
+                    </text>
+
+                    {/* Horizontal Y-Axis Grid Lines & Numbers */}
+                    {[1, 0.75, 0.5, 0.25, 0].map((pct, i) => {
+                      const yVal = 180 - pct * 140;
+                      const tickLabel = (pct * maxMw).toFixed(1);
+                      return (
+                        <g key={i}>
+                          <line
+                            x1="45"
+                            y1={yVal}
+                            x2="520"
+                            y2={yVal}
+                            stroke={pct === 0 ? '#94A3B8' : '#F1F5F9'}
+                            strokeDasharray={pct === 0 ? '' : '3 3'}
+                            strokeWidth={pct === 0 ? '1.5' : '1'}
+                          />
+                          <text
+                            x="40"
+                            y={yVal + 3}
+                            textAnchor="end"
+                            className="text-[9px] font-mono font-medium fill-slate-400"
+                          >
+                            {tickLabel}
+                          </text>
+                        </g>
+                      );
+                    })}
+
+                    {/* MCV Bars per Slot */}
+                    {slotsList.map((s, idx) => {
+                      const r = results[s];
+                      const isCleared = r && r.status === 'Cleared';
+                      const mwVal = isCleared ? r.mcv_mw : 0;
+                      const mwhVal = isCleared ? r.mcv_mwh : 0;
+                      const barHeight = Math.max(isCleared ? (mwVal / maxMw) * 140 : 4, 4);
+
+                      const slotWidth = (520 - 55) / slotsList.length;
+                      const slotCenterX = 55 + idx * slotWidth + slotWidth / 2;
+                      const barWidth = Math.min(48, slotWidth * 0.65);
+                      const barX = slotCenterX - barWidth / 2;
+                      const barY = 180 - barHeight;
+
+                      return (
+                        <g
+                          key={s}
+                          className="cursor-pointer group"
+                          onMouseEnter={() => setHoveredMcvSlot(s)}
+                        >
+                          {/* Background hover column */}
+                          <rect
+                            x={slotCenterX - slotWidth / 2 + 2}
+                            y="25"
+                            width={slotWidth - 4}
+                            height="155"
+                            rx="8"
+                            className="fill-transparent hover:fill-blue-50/50 transition-colors"
+                          />
+
+                          {/* MCV Bar */}
+                          <rect
+                            x={barX}
+                            y={barY}
+                            width={barWidth}
+                            height={barHeight}
+                            rx="6"
+                            fill="url(#mcvBlueGradient)"
+                            stroke={isCleared ? '#1D4ED8' : '#CBD5E1'}
+                            strokeWidth="1"
+                            className="transition-all duration-300 drop-shadow-xs"
+                          />
+
+                          {/* Value on top of bar */}
+                          <text
+                            x={slotCenterX}
+                            y={Math.max(barY - 6, 26)}
+                            textAnchor="middle"
+                            className="text-[11px] font-mono font-black fill-blue-900"
+                          >
+                            {isCleared ? `${mwVal.toFixed(1)} MW` : '0 MW'}
+                          </text>
+
+                          {/* Energy subtitle on bar */}
+                          {isCleared && barHeight > 30 && (
+                            <text
+                              x={slotCenterX}
+                              y={barY + 14}
+                              textAnchor="middle"
+                              className="text-[9px] font-mono font-bold fill-white/90"
+                            >
+                              {mwhVal.toFixed(2)} MWh
+                            </text>
+                          )}
+
+                          {/* Slot Label beneath axis */}
+                          <text
+                            x={slotCenterX}
+                            y="198"
+                            textAnchor="middle"
+                            className="text-[11px] font-mono font-bold fill-slate-800"
+                          >
+                            T{s}
+                          </text>
+
+                          {/* Status indicator dot */}
+                          <circle
+                            cx={slotCenterX}
+                            cy="208"
+                            r="3.5"
+                            fill={isCleared ? '#10B981' : '#F43F5E'}
+                          />
+                        </g>
+                      );
+                    })}
+
+                    <defs>
+                      <linearGradient id="mcvBlueGradient" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#60A5FA" />
+                        <stop offset="100%" stopColor="#2563EB" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                </div>
               </div>
 
-              {/* Zoom Toolbar */}
-              <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-xs">
-                <span className="px-1.5 font-mono font-bold text-slate-700 text-[10px]">
-                  {Math.round(chartZoom * 100)}%
-                </span>
-                <button
-                  onClick={handleZoomIn}
-                  disabled={chartZoom >= 2.5}
-                  className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
-                  title="Zoom In (+25%)"
-                >
-                  <ZoomIn className="w-3 h-3" />
-                </button>
-                <button
-                  onClick={handleZoomOut}
-                  disabled={chartZoom <= 1}
-                  className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 disabled:opacity-40 cursor-pointer shadow-2xs"
-                  title="Zoom Out (-25%)"
-                >
-                  <ZoomOut className="w-3 h-3" />
-                </button>
-                {chartZoom > 1 && (
-                  <button
-                    onClick={handleResetZoom}
-                    className="p-1 rounded bg-white text-slate-700 hover:text-indigo-900 hover:bg-slate-50 border border-slate-200 cursor-pointer shadow-2xs"
-                    title="Reset Zoom"
-                  >
-                    <RotateCcw className="w-3 h-3" />
-                  </button>
-                )}
+              {/* MCV Slot Breakdown Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 pt-3 border-t border-slate-100">
+                {slotsList.map((s) => {
+                  const r = results[s];
+                  const isCleared = r && r.status === 'Cleared';
+                  return (
+                    <div key={s} className="bg-blue-50/40 rounded-xl p-2.5 border border-blue-100">
+                      <div className="flex items-center justify-between text-xs mb-0.5">
+                        <span className="font-extrabold font-mono text-blue-950">Slot T{s}</span>
+                        <span className={`w-2 h-2 rounded-full ${isCleared ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                      </div>
+                      <div className="text-xs font-mono font-bold text-blue-800">
+                        {isCleared ? `${r.mcv_mw.toFixed(2)} MW` : '0 MW'}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
 
-          {/* Dynamic Hover Tooltip Card */}
-          {hoveredSlot !== null && results[hoveredSlot] && (
-            <div className="absolute top-14 right-6 z-20 bg-slate-900/90 text-white backdrop-blur-md rounded-xl p-2.5 shadow-xl border border-slate-700 text-xs font-mono space-y-0.5 pointer-events-none animate-in fade-in duration-100">
-              <div className="text-[10px] text-amber-400 font-sans font-bold flex items-center justify-between">
-                <span>Slot T{hoveredSlot} Clearing</span>
-                <span>{results[hoveredSlot].status}</span>
+          {/* ========================================================= */}
+          {/* CHART 3: FINANCIAL SETTLEMENT TURNOVER PER SLOT (NRs) */}
+          {/* ========================================================= */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600">
+                  <Activity className="w-4 h-4 text-emerald-600" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-slate-900">
+                    Market Financial Settlement Turnover per Slot
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Total financial volume (NRs = MCP × MWh × 1000)
+                  </p>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <span className="text-slate-300 font-sans">Price (MCP):</span>
-                <strong className="text-amber-300">NRs {results[hoveredSlot].mcp.toFixed(3)}/kWh</strong>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-slate-300 font-sans">Volume (MCV):</span>
-                <strong className="text-blue-300">{results[hoveredSlot].mcv_mw.toFixed(2)} MW</strong>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="text-slate-300 font-sans">Turnover:</span>
-                <strong className="text-emerald-300">NRs {Math.round(results[hoveredSlot].market_value).toLocaleString('en-US')}</strong>
+
+              <div className="px-3.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-mono font-extrabold text-emerald-800">
+                Total Turnover: NRs {Math.round(totalMarketTurnover).toLocaleString('en-US')}
               </div>
             </div>
-          )}
 
-          {/* SVG Grouped Column Chart with Explicit Data Labels right on top of bars */}
-          <div className="pt-2">
-            <div className="relative w-full overflow-x-auto">
-              <svg
-                viewBox="0 0 520 220"
-                className="w-full h-auto min-w-[420px] select-none transition-transform duration-200"
-                style={{ transform: `scale(${chartZoom})`, transformOrigin: 'bottom center' }}
-                onMouseLeave={() => setHoveredSlot(null)}
-              >
-                {/* Horizontal guide lines */}
-                {[0.25, 0.5, 0.75, 1].map((pct, i) => (
-                  <line
-                    key={i}
-                    x1="40"
-                    y1={180 - pct * 140}
-                    x2="500"
-                    y2={180 - pct * 140}
-                    stroke="#F1F5F9"
-                    strokeDasharray="3 3"
-                    strokeWidth="1"
-                  />
-                ))}
-
-                {/* Base axis line */}
-                <line x1="40" y1="180" x2="500" y2="180" stroke="#CBD5E1" strokeWidth="1.5" />
-
-                {/* Bars per Slot */}
-                {slotsList.map((s, idx) => {
-                  const r = results[s];
-                  const isCleared = r && r.status === 'Cleared';
-                  const mcpVal = isCleared ? r.mcp : 0;
-                  const mwVal = isCleared ? r.mcv_mw : 0;
-
-                  // Scales
-                  const mcpHeight = Math.max(isCleared ? (mcpVal / maxMcp) * 130 : 4, 4);
-                  const mwHeight = Math.max(isCleared ? (mwVal / maxMw) * 130 : 4, 4);
-
-                  // Slot X centers
-                  const slotWidth = (500 - 40) / slotsList.length;
-                  const slotCenterX = 40 + idx * slotWidth + slotWidth / 2;
-
-                  const barWidth = 26;
-                  const gap = 4;
-                  const mcpX = slotCenterX - barWidth - gap / 2;
-                  const mwX = slotCenterX + gap / 2;
-
-                  const mcpY = 180 - mcpHeight;
-                  const mwY = 180 - mwHeight;
-
-                  return (
-                    <g
-                      key={s}
-                      className="group cursor-pointer"
-                      onMouseEnter={() => setHoveredSlot(s)}
-                    >
-                      {/* Slot boundary background highlight */}
-                      <rect
-                        x={slotCenterX - slotWidth / 2 + 4}
-                        y="20"
-                        width={slotWidth - 8}
-                        height="160"
-                        rx="8"
-                        className="fill-transparent hover:fill-slate-50 transition-colors"
-                      />
-
-                      {/* MCP Bar (Amber) */}
-                      <rect
-                        x={mcpX}
-                        y={mcpY}
-                        width={barWidth}
-                        height={mcpHeight}
-                        rx="5"
-                        fill="url(#amberGradient)"
-                        className="transition-all duration-300"
-                      />
-
-                      {/* MCP Exact Value Label on Top */}
-                      <text
-                        x={mcpX + barWidth / 2}
-                        y={Math.max(mcpY - 6, 28)}
-                        textAnchor="middle"
-                        className="text-[10px] font-mono font-black fill-amber-700 font-bold"
-                      >
-                        {isCleared ? mcpVal.toFixed(2) : '0'}
-                      </text>
-
-                      {/* Dispatched MW Bar (Blue) */}
-                      <rect
-                        x={mwX}
-                        y={mwY}
-                        width={barWidth}
-                        height={mwHeight}
-                        rx="5"
-                        fill="url(#blueGradient)"
-                        className="transition-all duration-300"
-                      />
-
-                      {/* MW Exact Value Label on Top */}
-                      <text
-                        x={mwX + barWidth / 2}
-                        y={Math.max(mwY - 6, 28)}
-                        textAnchor="middle"
-                        className="text-[10px] font-mono font-black fill-blue-700 font-bold"
-                      >
-                        {isCleared ? `${Math.round(mwVal)}` : '0'}
-                      </text>
-
-                      {/* Slot Label beneath axis */}
-                      <text
-                        x={slotCenterX}
-                        y="198"
-                        textAnchor="middle"
-                        className="text-[11px] font-mono font-bold fill-slate-800"
-                      >
-                        T{s}
-                      </text>
-
-                      {/* Status indicator dot */}
-                      <circle
-                        cx={slotCenterX}
-                        cy="208"
-                        r="3"
-                        fill={isCleared ? '#10B981' : '#F43F5E'}
-                      />
-                    </g>
-                  );
-                })}
-
-                {/* SVG Gradients */}
-                <defs>
-                  <linearGradient id="amberGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#F59E0B" />
-                    <stop offset="100%" stopColor="#D97706" />
-                  </linearGradient>
-                  <linearGradient id="blueGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3B82F6" />
-                    <stop offset="100%" stopColor="#1D4ED8" />
-                  </linearGradient>
-                </defs>
-              </svg>
-            </div>
-
-            {/* Supplementary Data Table Strip directly adjacent to the chart */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2 pt-3 border-t border-slate-100">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
               {slotsList.map((s) => {
                 const r = results[s];
-                const isCleared = r && r.status === 'Cleared';
+                const mv = r?.market_value || 0;
+                const pctMv = Math.min(100, (mv / maxMv) * 100);
+
                 return (
-                  <div key={s} className="bg-slate-50/80 rounded-xl p-2.5 border border-slate-100">
-                    <div className="flex items-center justify-between text-xs mb-1">
-                      <span className="font-extrabold font-mono text-indigo-950">Slot T{s}</span>
-                      <span className={`w-2 h-2 rounded-full ${isCleared ? 'bg-emerald-500' : 'bg-rose-500'}`} />
+                  <div key={s} className="p-3.5 bg-slate-50/80 rounded-xl border border-slate-100 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-extrabold text-indigo-950 font-mono">Interval T{s}</span>
+                      <span className="font-mono font-extrabold text-emerald-700">
+                        {r?.status === 'Cleared'
+                          ? `NRs ${Math.round(mv).toLocaleString('en-US')}`
+                          : 'NRs 0'}
+                      </span>
                     </div>
-                    <div className="text-[11px] font-mono flex items-center justify-between">
-                      <span className="text-slate-500 font-sans">Price:</span>
-                      <strong className="text-amber-700">{isCleared ? `NRs ${r.mcp.toFixed(3)}` : 'No Trade'}</strong>
+                    <div className="h-2.5 w-full bg-slate-200/70 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-emerald-500 to-teal-700 rounded-full transition-all duration-500"
+                        style={{ width: `${pctMv}%` }}
+                      />
                     </div>
-                    <div className="text-[11px] font-mono flex items-center justify-between">
-                      <span className="text-slate-500 font-sans">Power:</span>
-                      <strong className="text-blue-700">{isCleared ? `${r.mcv_mw.toFixed(2)} MW` : '0 MW'}</strong>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                      <span>Rate: {r?.status === 'Cleared' ? `NRs ${r.mcp.toFixed(2)}` : '—'}</span>
+                      <span>Power: {r?.status === 'Cleared' ? `${r.mcv_mw.toFixed(1)} MW` : '—'}</span>
                     </div>
                   </div>
                 );
@@ -515,59 +885,6 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Trend 2: Market Financial Settlement Volume */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="p-2 rounded-lg bg-emerald-50 text-emerald-600">
-              <BarChart3 className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-slate-900">
-                Market Financial Turnover per Slot
-              </h3>
-              <p className="text-xs text-slate-500">Total settlement volume (NRs = MCP × MWh × 1000)</p>
-            </div>
-          </div>
-
-          <div className="space-y-3.5 pt-2">
-            {slotsList.map((s) => {
-              const r = results[s];
-              const mv = r?.market_value || 0;
-              const pctMv = Math.min(100, (mv / maxMv) * 100);
-
-              return (
-                <div key={s} className="space-y-1">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-indigo-950 font-mono">Slot T{s}</span>
-                    <span className="font-mono font-bold text-emerald-700">
-                      {r?.status === 'Cleared'
-                        ? `NRs ${Math.round(mv).toLocaleString('en-US')}`
-                        : 'NRs 0'}
-                    </span>
-                  </div>
-                  <div className="h-3.5 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-emerald-500 to-teal-700 rounded-full transition-all duration-500"
-                      style={{ width: `${pctMv}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="mt-4 p-3 bg-slate-50 rounded-xl border border-slate-100 text-xs text-slate-600 flex items-center justify-between">
-            <span className="font-medium">Total Session Market Volume:</span>
-            <span className="font-mono font-extrabold text-emerald-700 text-sm">
-              NRs{' '}
-              {Math.round(
-                slotsList.reduce((acc, s) => acc + (results[s]?.market_value || 0), 0)
-              ).toLocaleString('en-US')}
-            </span>
-          </div>
-        </div>
-      </div>
       )}
     </div>
   );

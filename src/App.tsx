@@ -38,6 +38,7 @@ import { EmailPreviewModal } from './components/EmailPreviewModal';
 import { LoginModal } from './components/LoginModal';
 import { UserManagementModal } from './components/UserManagementModal';
 import { getCurrentUser, logoutUser } from './services/authService';
+import { generateMarketReportPDF } from './services/pdfReportService';
 import { UserAccount } from './types';
 
 import {
@@ -52,6 +53,7 @@ import {
   QrCode,
   FileCode,
   ExternalLink,
+  FileText,
 } from 'lucide-react';
 
 export default function App() {
@@ -515,13 +517,34 @@ export default function App() {
                 </button>
               </>
             ) : (
-              <button
-                onClick={handleReopenBidsTaking}
-                className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-indigo-900 hover:bg-indigo-800 text-white transition-colors shadow-sm cursor-pointer"
-                title="Re-open intake and re-enable Google Sheet sync"
-              >
-                <span>Re-open Bids Taking &amp; Sheet Sync</span>
-              </button>
+              <div className="flex items-center gap-2 flex-wrap w-full md:w-auto">
+                <button
+                  onClick={() =>
+                    generateMarketReportPDF({
+                      results,
+                      settlements: settlementRecords,
+                      participantSummaries,
+                      nSlots,
+                      sessionLabel,
+                      totalBuyers: buyers.length,
+                      totalSellers: sellers.length,
+                    })
+                  }
+                  className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-rose-600 hover:bg-rose-500 text-white transition-all shadow-sm cursor-pointer active:scale-95"
+                  title="Download complete market clearing and settlement report as PDF in 1 click"
+                >
+                  <FileText className="w-4 h-4" />
+                  <span>Download PDF Report</span>
+                </button>
+
+                <button
+                  onClick={handleReopenBidsTaking}
+                  className="flex-1 md:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 text-xs font-bold rounded-xl bg-indigo-900 hover:bg-indigo-800 text-white transition-colors shadow-sm cursor-pointer"
+                  title="Re-open intake and re-enable Google Sheet sync"
+                >
+                  <span>Re-open Bids Taking &amp; Sheet Sync</span>
+                </button>
+              </div>
             )}
           </div>
         </section>
@@ -563,6 +586,9 @@ export default function App() {
               hasComputed={hasComputed}
               totalBuyers={buyers.length}
               totalSellers={sellers.length}
+              settlements={settlementRecords}
+              participantSummaries={participantSummaries}
+              sessionLabel={sessionLabel}
               onRunCompute={() => {
                 setActiveTab('compute');
                 handleCompute();
@@ -590,6 +616,10 @@ export default function App() {
               hasComputed={hasComputed}
               totalBuyers={buyers.length}
               totalSellers={sellers.length}
+              results={results}
+              participantSummaries={participantSummaries}
+              nSlots={nSlots}
+              sessionLabel={sessionLabel}
               onRunCompute={() => {
                 setActiveTab('compute');
                 handleCompute();
