@@ -202,11 +202,17 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
         ]);
       } else {
         setStatusType('error');
-        setStatusMessage(`Delivery notice for ${p.name}: ${res.error}`);
+        setStatusMessage(
+          `Automatic delivery to ${p.name} failed: ${res.error || 'Unknown email provider error'}. ` +
+          `Use "Web Gmail" to send the notification manually.`
+        );
       }
     } catch (err: any) {
       setStatusType('error');
-      setStatusMessage(`Notice for ${p.name}: ${err.message || String(err)}`);
+      setStatusMessage(
+        `Automatic delivery to ${p.name} failed: ${err?.message || String(err)}. ` +
+        `Use "Web Gmail" to send the notification manually.`
+      );
     } finally {
       setSendingRowName(null);
     }
@@ -452,7 +458,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                   <span>Outbound Email Provider Setup (Cloud &amp; Render Compatible)</span>
                 </span>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Render Free Plan blocks raw SMTP (ports 465/587). Use <strong>Google Apps Script</strong> or <strong>Brevo API</strong> for 100% unblocked HTTPS Port 443 delivery.
+                  Render Free Plan blocks raw SMTP (ports 465/587). Use <strong>Google Apps Script</strong>, <strong>Brevo API</strong>, or <strong>Resend API</strong> for HTTPS Port 443 delivery.
                 </p>
               </div>
 
@@ -750,6 +756,11 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                     nSlots
                   );
                   const mailtoLink = generateMailtoLink(p.email || '', emailObj.subject, emailObj.text);
+                  const gmailWebLink = generateGmailWebLink(
+                    p.email || '',
+                    emailObj.subject,
+                    emailObj.text
+                  );
 
                   return (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors">
@@ -843,6 +854,18 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                             )}
                             <span>Send Notification</span>
                           </button>
+
+                          {/* Open Gmail Web */}
+                          <a
+                            href={gmailWebLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 border border-red-700 rounded-lg transition-colors shadow-2xs"
+                            title="Open Gmail in a new tab with recipient, subject and message pre-filled"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Web Gmail</span>
+                          </a>
 
                           {/* Open Mail App */}
                           <a
