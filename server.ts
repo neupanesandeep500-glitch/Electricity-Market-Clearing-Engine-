@@ -93,8 +93,13 @@ app.get('/api/fetch-sheet', async (req: Request, res: Response) => {
   return res.status(502).send('Failed to retrieve spreadsheet data from Google Sheets');
 });
 
-// Pooled transporter cache for high performance & connection reuse across Render/Cloud instances
-const transporterPool = new Map<string, Transporter>();
+// Global process safeguards to prevent background network timeouts or socket events from crashing Node.js
+process.on('uncaughtException', (err) => {
+  console.error('[Process SafeGuard] uncaughtException caught:', err.message);
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[Process SafeGuard] unhandledRejection caught:', reason?.message || reason);
+});
 
 function withTimeout<T>(promise: Promise<T>, ms: number, errMsg: string): Promise<T> {
   return Promise.race([
@@ -103,33 +108,29 @@ function withTimeout<T>(promise: Promise<T>, ms: number, errMsg: string): Promis
   ]);
 }
 
-function getMailTransporter(user: string, pass: string, port = 465, secure = true): Transporter {
+/**
+ * Creates clean, safe non-pooled mail transporter with explicit error listener
+ */
+function createDirectMailTransporter(user: string, pass: string, port = 465, secure = true): Transporter {
   const cleanPass = pass.replace(/\s+/g, '');
-  const key = `${user}:${cleanPass}:${port}`;
-
-  if (transporterPool.has(key)) {
-    return transporterPool.get(key)!;
-  }
-
-  // Fast timeout settings so Render proxy never terminates the connection
   const tp = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port,
     secure,
     auth: { user, pass: cleanPass },
-    pool: true,
-    maxConnections: 3,
-    maxMessages: 100,
-    rateLimit: 5,
-    connectionTimeout: 3500,
-    greetingTimeout: 3500,
-    socketTimeout: 5000,
+    connectionTimeout: 2000,
+    greetingTimeout: 2000,
+    socketTimeout: 3000,
     tls: {
       rejectUnauthorized: false,
     },
   });
 
-  transporterPool.set(key, tp);
+  // Attach error handler to prevent unhandled EventEmitter error crashes
+  tp.on('error', (err) => {
+    console.warn(`[SMTP Warning] Transporter socket notice on port ${port}:`, err?.message || err);
+  });
+
   return tp;
 }
 
@@ -254,31 +255,38 @@ async function sendViaBrevoHttp(
 
 /**
  * Robust email sender with primary Port 465 (SSL) and fallback to Port 587 (STARTTLS)
- * Strictly bounded by 2.5s per attempt to guarantee fast response on cloud hosts
+ * Strictly bounded by 2.0s per attempt to guarantee fast response on cloud hosts
  */
 async function sendMailWithFallback(
   user: string,
   pass: string,
   mailOptions: SendMailOptions
 ): Promise<SentMessageInfo> {
+  // If running on Render free tier, direct SMTP is blocked at network level
+  if (process.env.RENDER && !process.env.RENDER_SMTP_UNLOCKED) {
+    throw new Error(
+      'Render Free Plan blocks outbound SMTP (ports 465/587). Please configure Google Apps Script Relay (free) or Brevo API in Email Settings.'
+    );
+  }
+
   const cleanPass = pass.replace(/\s+/g, '');
 
   try {
-    // Primary: Port 465 (Direct SSL / TLS) with strict 2.5s timeout
-    const tp465 = getMailTransporter(user, cleanPass, 465, true);
+    // Primary: Port 465 (Direct SSL / TLS) with strict 2.0s timeout
+    const tp465 = createDirectMailTransporter(user, cleanPass, 465, true);
     return await withTimeout(
       tp465.sendMail(mailOptions),
-      2500,
+      2000,
       'Port 465 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
     );
   } catch (err465: any) {
-    console.warn(`[SMTP] Port 465 failed (${err465.message}), attempting fallback to Port 587...`);
+    console.warn(`[SMTP] Port 465 notice (${err465.message}), attempting fallback to Port 587...`);
     try {
-      // Fallback: Port 587 (STARTTLS) with strict 2.5s timeout
-      const tp587 = getMailTransporter(user, cleanPass, 587, false);
+      // Fallback: Port 587 (STARTTLS) with strict 2.0s timeout
+      const tp587 = createDirectMailTransporter(user, cleanPass, 587, false);
       return await withTimeout(
         tp587.sendMail(mailOptions),
-        2500,
+        2000,
         'Port 587 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
       );
     } catch (err587: any) {
@@ -428,18 +436,25 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
   const user = sender || EMAIL_SENDER;
   const pass = password ? password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
 
+  if (process.env.RENDER && !process.env.RENDER_SMTP_UNLOCKED) {
+    return res.status(200).json({
+      success: false,
+      error: 'Render Free Plan blocks raw outbound SMTP ports (465/587). Please select and configure Google Apps Script Relay (free) or Brevo API.',
+    });
+  }
+
   try {
-    let tp = getMailTransporter(user, pass, 465, true);
+    let tp = createDirectMailTransporter(user, pass, 465, true);
     try {
-      await withTimeout(tp.verify(), 2500, 'Port 465 verify timed out');
+      await withTimeout(tp.verify(), 2000, 'Port 465 verify timed out');
     } catch {
-      tp = getMailTransporter(user, pass, 587, false);
-      await withTimeout(tp.verify(), 2500, 'Port 587 verify timed out');
+      tp = createDirectMailTransporter(user, pass, 587, false);
+      await withTimeout(tp.verify(), 2000, 'Port 587 verify timed out');
     }
-    return res.json({ success: true, message: `SMTP connection to Gmail verified successfully for ${user}!` });
+    return res.status(200).json({ success: true, message: `SMTP connection to Gmail verified successfully for ${user}!` });
   } catch (err: any) {
     console.error('SMTP verify error:', err.message);
-    return res.json({
+    return res.status(200).json({
       success: false,
       error: `Notice: ${err.message || String(err)}. Note: Render Free Plan blocks direct SMTP ports (465/587). Please use Google Apps Script Relay or Brevo HTTP API for guaranteed delivery.`,
     });
@@ -450,162 +465,179 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
  * Send single individual email notification
  */
 app.post('/api/send-single-email', async (req: Request, res: Response) => {
-  const { to, subject, html, text, smtpCredentials, httpApi } = req.body || {};
-  if (!to || !to.includes('@')) {
-    return res.json({ success: false, error: 'Valid recipient email required' });
+  try {
+    const { to, subject, html, text, smtpCredentials, httpApi } = req.body || {};
+    if (!to || !to.includes('@')) {
+      return res.status(200).json({ success: false, error: 'Valid recipient email required' });
+    }
+
+    const result = await dispatchSingleEmail(
+      { to, subject, html, text },
+      smtpCredentials,
+      httpApi
+    );
+
+    return res.status(200).json(result);
+  } catch (err: any) {
+    console.error('Error in /api/send-single-email:', err);
+    return res.status(200).json({
+      success: false,
+      error: err.message || 'Email delivery failed on server',
+    });
   }
-
-  const result = await dispatchSingleEmail(
-    { to, subject, html, text },
-    smtpCredentials,
-    httpApi
-  );
-
-  return res.json(result);
 });
 
 /**
  * Batch email notification sender with multi-provider dispatch & parallel concurrency
  */
 app.post('/api/send-emails', async (req: Request, res: Response) => {
-  const { jobs, dryRun, smtpCredentials, httpApi } = req.body || {};
+  try {
+    const { jobs, dryRun, smtpCredentials, httpApi } = req.body || {};
 
-  if (!jobs || !Array.isArray(jobs)) {
-    return res.json({ success: false, error: 'jobs array required', logs: [] });
-  }
-
-  const logs: any[] = [];
-
-  if (dryRun) {
-    for (const job of jobs) {
-      logs.push({
-        name: job.name,
-        role: job.role,
-        email: job.email,
-        status: job.email && job.email.includes('@') ? 'dry_run' : 'no_email',
-        attempts: 0,
-        awarded_mw: job.awarded_mw,
-        amount_nrs: job.amount_nrs,
-        sent_at: new Date().toISOString(),
-      });
+    if (!jobs || !Array.isArray(jobs)) {
+      return res.status(200).json({ success: false, error: 'jobs array required', logs: [] });
     }
-    return res.json({ success: true, dryRun: true, logs });
-  }
 
-  // Check if Google Apps Script URL supports bulk batch dispatch in a single call
-  const scriptUrl = httpApi?.googleAppsScriptUrl || process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL;
-  if (scriptUrl && scriptUrl.trim().length > 10) {
-    try {
-      const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
-      if (validJobs.length > 0) {
-        const batchRes = await sendViaGoogleAppsScript(scriptUrl, {
-          action: 'send_batch',
-          jobs: validJobs.map((j) => ({
-            to: j.email,
-            subject: j.subject,
-            html: j.html,
-            text: j.text,
-            name: j.name,
-            role: j.role,
-          })),
+    const logs: any[] = [];
+
+    if (dryRun) {
+      for (const job of jobs) {
+        logs.push({
+          name: job.name,
+          role: job.role,
+          email: job.email,
+          status: job.email && job.email.includes('@') ? 'dry_run' : 'no_email',
+          attempts: 0,
+          awarded_mw: job.awarded_mw,
+          amount_nrs: job.amount_nrs,
+          sent_at: new Date().toISOString(),
         });
-
-        if (batchRes.success) {
-          for (const job of jobs) {
-            if (!job.email || !job.email.includes('@')) {
-              logs.push({
-                name: job.name,
-                role: job.role,
-                email: '',
-                status: 'no_email',
-                attempts: 0,
-                awarded_mw: job.awarded_mw,
-                amount_nrs: job.amount_nrs,
-                sent_at: '',
-              });
-            } else {
-              logs.push({
-                name: job.name,
-                role: job.role,
-                email: job.email,
-                status: 'sent',
-                attempts: 1,
-                awarded_mw: job.awarded_mw,
-                amount_nrs: job.amount_nrs,
-                sent_at: new Date().toISOString(),
-              });
-            }
-          }
-          return res.json({ success: true, dryRun: false, logs, provider: 'Google Apps Script Batch' });
-        }
       }
-    } catch (gasErr: any) {
-      console.warn('[Dispatch] Google Apps Script bulk batch call failed, falling back to chunked dispatch:', gasErr.message);
+      return res.status(200).json({ success: true, dryRun: true, logs });
     }
-  }
 
-  // Parallel chunked dispatch using unified dispatcher
-  const CONCURRENCY = 4;
-  for (let i = 0; i < jobs.length; i += CONCURRENCY) {
-    const chunk = jobs.slice(i, i + CONCURRENCY);
-    await Promise.all(
-      chunk.map(async (job) => {
-        if (!job.email || !job.email.includes('@')) {
-          logs.push({
-            name: job.name,
-            role: job.role,
-            email: '',
-            status: 'no_email',
-            attempts: 0,
-            awarded_mw: job.awarded_mw,
-            amount_nrs: job.amount_nrs,
-            sent_at: '',
+    // Check if Google Apps Script URL supports bulk batch dispatch in a single call
+    const scriptUrl = httpApi?.googleAppsScriptUrl || process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL;
+    if (scriptUrl && scriptUrl.trim().length > 10) {
+      try {
+        const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
+        if (validJobs.length > 0) {
+          const batchRes = await sendViaGoogleAppsScript(scriptUrl, {
+            action: 'send_batch',
+            jobs: validJobs.map((j) => ({
+              to: j.email,
+              subject: j.subject,
+              html: j.html,
+              text: j.text,
+              name: j.name,
+              role: j.role,
+            })),
           });
-          return;
+
+          if (batchRes.success) {
+            for (const job of jobs) {
+              if (!job.email || !job.email.includes('@')) {
+                logs.push({
+                  name: job.name,
+                  role: job.role,
+                  email: '',
+                  status: 'no_email',
+                  attempts: 0,
+                  awarded_mw: job.awarded_mw,
+                  amount_nrs: job.amount_nrs,
+                  sent_at: '',
+                });
+              } else {
+                logs.push({
+                  name: job.name,
+                  role: job.role,
+                  email: job.email,
+                  status: 'sent',
+                  attempts: 1,
+                  awarded_mw: job.awarded_mw,
+                  amount_nrs: job.amount_nrs,
+                  sent_at: new Date().toISOString(),
+                });
+              }
+            }
+            return res.status(200).json({ success: true, dryRun: false, logs, provider: 'Google Apps Script Batch' });
+          }
         }
+      } catch (gasErr: any) {
+        console.warn('[Dispatch] Google Apps Script bulk batch call failed, falling back to chunked dispatch:', gasErr.message);
+      }
+    }
 
-        const dispatchResult = await dispatchSingleEmail(
-          {
-            to: job.email,
-            subject: job.subject,
-            html: job.html,
-            text: job.text,
-            name: job.name,
-            role: job.role,
-          },
-          smtpCredentials,
-          httpApi
-        );
+    // Parallel chunked dispatch using unified dispatcher
+    const CONCURRENCY = 4;
+    for (let i = 0; i < jobs.length; i += CONCURRENCY) {
+      const chunk = jobs.slice(i, i + CONCURRENCY);
+      await Promise.all(
+        chunk.map(async (job) => {
+          if (!job.email || !job.email.includes('@')) {
+            logs.push({
+              name: job.name,
+              role: job.role,
+              email: '',
+              status: 'no_email',
+              attempts: 0,
+              awarded_mw: job.awarded_mw,
+              amount_nrs: job.amount_nrs,
+              sent_at: '',
+            });
+            return;
+          }
 
-        if (dispatchResult.success) {
-          logs.push({
-            name: job.name,
-            role: job.role,
-            email: job.email,
-            status: 'sent',
-            attempts: 1,
-            awarded_mw: job.awarded_mw,
-            amount_nrs: job.amount_nrs,
-            sent_at: new Date().toISOString(),
-          });
-        } else {
-          logs.push({
-            name: job.name,
-            role: job.role,
-            email: job.email,
-            status: 'failed',
-            attempts: 1,
-            error: dispatchResult.error,
-            awarded_mw: job.awarded_mw,
-            amount_nrs: job.amount_nrs,
-            sent_at: '',
-          });
-        }
-      })
-    );
+          const dispatchResult = await dispatchSingleEmail(
+            {
+              to: job.email,
+              subject: job.subject,
+              html: job.html,
+              text: job.text,
+              name: job.name,
+              role: job.role,
+            },
+            smtpCredentials,
+            httpApi
+          );
+
+          if (dispatchResult.success) {
+            logs.push({
+              name: job.name,
+              role: job.role,
+              email: job.email,
+              status: 'sent',
+              attempts: 1,
+              awarded_mw: job.awarded_mw,
+              amount_nrs: job.amount_nrs,
+              sent_at: new Date().toISOString(),
+            });
+          } else {
+            logs.push({
+              name: job.name,
+              role: job.role,
+              email: job.email,
+              status: 'failed',
+              attempts: 1,
+              error: dispatchResult.error,
+              awarded_mw: job.awarded_mw,
+              amount_nrs: job.amount_nrs,
+              sent_at: '',
+            });
+          }
+        })
+      );
+    }
+
+    return res.status(200).json({ success: true, dryRun: false, logs });
+  } catch (err: any) {
+    console.error('Error in /api/send-emails:', err);
+    return res.status(200).json({
+      success: false,
+      error: err.message || 'Batch email dispatch failed on server',
+      logs: [],
+    });
   }
-
-  return res.json({ success: true, dryRun: false, logs });
 });
 
 /**
