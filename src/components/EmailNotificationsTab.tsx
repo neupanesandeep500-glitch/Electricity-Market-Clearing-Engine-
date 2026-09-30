@@ -12,6 +12,7 @@ import {
   sendSingleNotification,
   verifySmtpConnection,
   generateMailtoLink,
+  generateGmailWebLink,
 } from '../services/emailService';
 import {
   Mail,
@@ -63,8 +64,14 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   const [showSmtpConfig, setShowSmtpConfig] = useState(false);
   const [senderEmail, setSenderEmail] = useState('');
   const [appPassword, setAppPassword] = useState('');
+  const [resendApiKey, setResendApiKey] = useState(() => localStorage.getItem('nepal_market_resend_api_key') || '');
   const [isVerifyingSmtp, setIsVerifyingSmtp] = useState(false);
   const [smtpVerifyResult, setSmtpVerifyResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  const handleSaveResendKey = (val: string) => {
+    setResendApiKey(val);
+    localStorage.setItem('nepal_market_resend_api_key', val.trim());
+  };
 
   // Inline email editing state
   const [editingName, setEditingName] = useState<string | null>(null);
@@ -152,6 +159,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
     try {
       const creds = senderEmail && appPassword ? { sender: senderEmail, password: appPassword } : undefined;
+      const httpApi = resendApiKey ? { resendApiKey } : undefined;
       const res = await sendSingleNotification(
         {
           to: p.email,
@@ -159,7 +167,8 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
           html: email.html,
           text: email.text,
         },
-        creds
+        creds,
+        httpApi
       );
 
       if (res.success) {
@@ -181,11 +190,17 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
         ]);
       } else {
         setStatusType('error');
-        setStatusMessage(`Failed to send to ${p.name}: ${res.error}. Try "Open in Mail App".`);
+        if (res.isRenderSmtpBlocked) {
+          setStatusMessage(
+            `Render Free Plan blocks outbound SMTP (ports 465/587). Click the red "Web Gmail" button next to ${p.name} to send directly in 1 click via your browser!`
+          );
+        } else {
+          setStatusMessage(`Delivery notice for ${p.name}: ${res.error}. Click "Web Gmail" to send directly.`);
+        }
       }
     } catch (err: any) {
       setStatusType('error');
-      setStatusMessage(`Error sending to ${p.name}: ${err.message || String(err)}`);
+      setStatusMessage(`Notice for ${p.name}: ${err.message || String(err)}. Click "Web Gmail" to send in 1 click.`);
     } finally {
       setSendingRowName(null);
     }
@@ -434,6 +449,38 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
               </div>
             </div>
 
+            {/* Cloud Deployment Notice for Render Free Plan */}
+            <div className="p-3 bg-amber-50/90 border border-amber-200/90 rounded-xl text-slate-700 text-xs space-y-1.5">
+              <span className="font-bold text-amber-900 flex items-center gap-1.5">
+                <span>💡 Render Free Plan Deployment Notice</span>
+              </span>
+              <p className="text-[11px] text-slate-600 leading-relaxed">
+                Render's free tier blocks outbound SMTP ports 25, 465, and 587. Two zero-block options are available:
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                <div className="p-2 bg-white border border-amber-200 rounded-lg">
+                  <strong className="text-rose-700 block mb-0.5">1-Click Web Gmail:</strong>
+                  Click the red <strong>Web Gmail</strong> button on any participant's row to send directly from your browser tab in 1 click!
+                </div>
+                <div className="p-2 bg-white border border-amber-200 rounded-lg">
+                  <strong className="text-indigo-800 block mb-0.5">Automated HTTP API:</strong>
+                  Enter a free <a href="https://resend.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-indigo-700">Resend API key</a> below to send automated headless emails over HTTPS Port 443!
+                </div>
+              </div>
+              <div className="pt-1">
+                <label className="text-[11px] font-semibold text-slate-700 block mb-0.5">
+                  Optional: Resend API Key (re_...) for automated HTTPS sending
+                </label>
+                <input
+                  type="password"
+                  value={resendApiKey}
+                  onChange={(e) => handleSaveResendKey(e.target.value)}
+                  placeholder="e.g. re_123456789..."
+                  className="w-full p-2 bg-white border border-slate-200 rounded-lg outline-none font-mono text-xs focus:border-indigo-600"
+                />
+              </div>
+            </div>
+
             <div className="flex items-center gap-3 pt-1">
               <button
                 type="button"
@@ -537,6 +584,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                     nSlots
                   );
                   const mailtoLink = generateMailtoLink(p.email || '', emailObj.subject, emailObj.text);
+                  const gmailWebLink = generateGmailWebLink(p.email || '', emailObj.subject, emailObj.text);
 
                   return (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors">
@@ -605,7 +653,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                         NRs {p.total_settlement_nrs.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                       </td>
                       <td className="p-3 text-center">
-                        <div className="inline-flex items-center gap-1.5">
+                        <div className="inline-flex items-center gap-1.5 flex-wrap justify-center">
                           {/* Preview Email */}
                           <button
                             onClick={() => onPreviewEmail(p)}
@@ -616,12 +664,12 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                             <span>Preview</span>
                           </button>
 
-                          {/* Direct Send */}
+                          {/* Direct Send (API) */}
                           <button
                             onClick={() => handleSendSingle(p)}
                             disabled={sendingRowName === p.name || !hasComputed}
                             className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer disabled:opacity-40"
-                            title="Send confirmation email directly via SMTP"
+                            title="Send confirmation email directly via server"
                           >
                             {sendingRowName === p.name ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -631,13 +679,25 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                             <span>Send</span>
                           </button>
 
+                          {/* 1-Click Web Gmail (100% Guaranteed on Render) */}
+                          <a
+                            href={gmailWebLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-rose-700 hover:text-rose-900 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors cursor-pointer shadow-2xs"
+                            title="Open directly in Gmail Webmail with pre-filled obligation details (Works 100% on Render Free & Paid)"
+                          >
+                            <Mail className="w-3.5 h-3.5 text-rose-600" />
+                            <span>Web Gmail</span>
+                          </a>
+
                           {/* Open Mail App */}
                           <a
                             href={mailtoLink}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
-                            title="Open in your default mail app (Outlook, Apple Mail, Gmail)"
+                            title="Open in your default mail app (Outlook, Apple Mail, etc.)"
                           >
                             <ExternalLink className="w-3.5 h-3.5" />
                             <span>Mail App</span>

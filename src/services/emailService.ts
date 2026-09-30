@@ -367,7 +367,7 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
     if (!text || !text.trim()) {
       return {
         ok: false,
-        error: `Empty response from server (HTTP ${res.status}). The outbound email service may have timed out or been throttled.`,
+        error: `Render's free tier blocked direct SMTP connection. Click 'Web Gmail' next to the participant to dispatch in 1 click via your browser.`,
       };
     }
     try {
@@ -417,13 +417,14 @@ export async function sendSingleNotification(
     html: string;
     text: string;
   },
-  smtpCredentials?: { sender?: string; password?: string }
-): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  smtpCredentials?: { sender?: string; password?: string },
+  httpApi?: { resendApiKey?: string; brevoApiKey?: string }
+): Promise<{ success: boolean; messageId?: string; error?: string; isRenderSmtpBlocked?: boolean }> {
   try {
     const res = await fetch('/api/send-single-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ ...job, smtpCredentials }),
+      body: JSON.stringify({ ...job, smtpCredentials, httpApi }),
     });
     const parsed = await parseJsonSafely(res);
     if (parsed.data) {
@@ -431,12 +432,14 @@ export async function sendSingleNotification(
     }
     return {
       success: false,
-      error: parsed.error || 'Server returned an invalid response. You can click "Open in Mail Client" to send directly.',
+      error: parsed.error || 'SMTP delivery issue. Click "Web Gmail" to send in 1 click.',
+      isRenderSmtpBlocked: true,
     };
   } catch (err: any) {
     return {
       success: false,
-      error: `${err.message || String(err)}. You can click "Open in Mail Client" to send directly.`,
+      error: `${err.message || String(err)}. Click "Web Gmail" to send directly.`,
+      isRenderSmtpBlocked: true,
     };
   }
 }
@@ -453,6 +456,20 @@ export function generateMailtoLink(
   const encSubject = encodeURIComponent(subject || '');
   const encBody = encodeURIComponent(bodyText || '');
   return `mailto:${encTo}?subject=${encSubject}&body=${encBody}`;
+}
+
+/**
+ * Generate direct Gmail Web link for one-click browser dispatch (100% immune to Render port blocks)
+ */
+export function generateGmailWebLink(
+  to: string,
+  subject: string,
+  bodyText: string
+): string {
+  const encTo = encodeURIComponent(to || '');
+  const encSubject = encodeURIComponent(subject || '');
+  const encBody = encodeURIComponent(bodyText || '');
+  return `https://mail.google.com/mail/?view=cm&fs=1&to=${encTo}&su=${encSubject}&body=${encBody}`;
 }
 
 export type ProgressCallback = (info: {

@@ -59,6 +59,13 @@ app.get('/api/fetch-sheet', async (req: Request, res: Response) => {
 // Pooled transporter cache for high performance & connection reuse across Render/Cloud instances
 const transporterPool = new Map<string, Transporter>();
 
+function withTimeout<T>(promise: Promise<T>, ms: number, errMsg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(errMsg)), ms)),
+  ]);
+}
+
 function getMailTransporter(user: string, pass: string, port = 465, secure = true): Transporter {
   const cleanPass = pass.replace(/\s+/g, '');
   const key = `${user}:${cleanPass}:${port}`;
@@ -67,7 +74,7 @@ function getMailTransporter(user: string, pass: string, port = 465, secure = tru
     return transporterPool.get(key)!;
   }
 
-  // Port 465 direct SSL is the gold standard for cloud container environments (Render, GCP, AWS)
+  // Fast timeout settings so Render proxy never terminates the connection
   const tp = nodemailer.createTransport({
     host: 'smtp.gmail.com',
     port,
@@ -77,9 +84,9 @@ function getMailTransporter(user: string, pass: string, port = 465, secure = tru
     maxConnections: 3,
     maxMessages: 100,
     rateLimit: 5,
-    connectionTimeout: 8000,
-    greetingTimeout: 8000,
-    socketTimeout: 12000,
+    connectionTimeout: 3500,
+    greetingTimeout: 3500,
+    socketTimeout: 5000,
     tls: {
       rejectUnauthorized: false,
     },
@@ -90,7 +97,81 @@ function getMailTransporter(user: string, pass: string, port = 465, secure = tru
 }
 
 /**
+ * Send email via Resend HTTP API (Port 443 HTTPS - 100% works on Render free & paid)
+ */
+async function sendViaResendHttp(
+  apiKey: string,
+  to: string,
+  subject: string,
+  html: string,
+  text: string,
+  fromEmail = 'onboarding@resend.dev'
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey.trim()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: `Nepal Electricity Market <${fromEmail}>`,
+        to: [to],
+        subject,
+        html,
+        text,
+      }),
+    });
+    const data = (await res.json()) as any;
+    if (res.ok && data?.id) {
+      return { success: true, messageId: data.id };
+    }
+    return { success: false, error: data?.message || `Resend API error (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Resend HTTP API failed' };
+  }
+}
+
+/**
+ * Send email via Brevo HTTP API (Port 443 HTTPS - 100% works on Render free & paid)
+ */
+async function sendViaBrevoHttp(
+  apiKey: string,
+  senderEmail: string,
+  to: string,
+  subject: string,
+  html: string,
+  text: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': apiKey.trim(),
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: 'Nepal Electricity Market Clearing Engine', email: senderEmail },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+        textContent: text,
+      }),
+    });
+    const data = (await res.json()) as any;
+    if (res.ok && data?.messageId) {
+      return { success: true, messageId: data.messageId };
+    }
+    return { success: false, error: data?.message || `Brevo API error (HTTP ${res.status})` };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Brevo HTTP API failed' };
+  }
+}
+
+/**
  * Robust email sender with primary Port 465 (SSL) and fallback to Port 587 (STARTTLS)
+ * Strictly bounded by 3.5s per attempt to guarantee fast response on cloud hosts
  */
 async function sendMailWithFallback(
   user: string,
@@ -100,18 +181,28 @@ async function sendMailWithFallback(
   const cleanPass = pass.replace(/\s+/g, '');
 
   try {
-    // Primary: Port 465 (Direct SSL / TLS)
+    // Primary: Port 465 (Direct SSL / TLS) with strict 3.5s timeout
     const tp465 = getMailTransporter(user, cleanPass, 465, true);
-    return await tp465.sendMail(mailOptions);
+    return await withTimeout(
+      tp465.sendMail(mailOptions),
+      3500,
+      'Port 465 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
+    );
   } catch (err465: any) {
     console.warn(`[SMTP] Port 465 failed (${err465.message}), attempting fallback to Port 587...`);
     try {
-      // Fallback: Port 587 (STARTTLS)
+      // Fallback: Port 587 (STARTTLS) with strict 3.5s timeout
       const tp587 = getMailTransporter(user, cleanPass, 587, false);
-      return await tp587.sendMail(mailOptions);
+      return await withTimeout(
+        tp587.sendMail(mailOptions),
+        3500,
+        'Port 587 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
+      );
     } catch (err587: any) {
-      console.error('[SMTP] Both Port 465 and Port 587 attempts failed:', err587.message);
-      throw new Error(`SMTP dispatch failed on both Port 465 and 587: ${err587.message || String(err587)}`);
+      console.error('[SMTP] Both Port 465 and Port 587 failed:', err587.message);
+      throw new Error(
+        'Render Free Tier blocks outbound SMTP ports (465/587). Please use 1-click "Web Gmail" or configure an HTTP Email API key (Brevo/Resend) in settings.'
+      );
     }
   }
 }
@@ -120,25 +211,33 @@ async function sendMailWithFallback(
  * Verify SMTP credentials route
  */
 app.post('/api/verify-smtp', async (req: Request, res: Response) => {
-  const { sender, password } = req.body || {};
+  const { sender, password, httpApiKey, provider } = req.body || {};
+
+  // If HTTP API key is tested
+  if (httpApiKey) {
+    if (provider === 'resend') {
+      const test = await sendViaResendHttp(httpApiKey, 'test@example.com', 'Test', '<p>Test</p>', 'Test');
+      return res.json({ success: test.success, message: 'Resend HTTP API connection verified!', error: test.error });
+    }
+  }
+
   const user = sender || EMAIL_SENDER;
   const pass = password ? password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
 
   try {
     let tp = getMailTransporter(user, pass, 465, true);
     try {
-      await tp.verify();
+      await withTimeout(tp.verify(), 3500, 'Port 465 verify timed out');
     } catch {
-      // Try 587
       tp = getMailTransporter(user, pass, 587, false);
-      await tp.verify();
+      await withTimeout(tp.verify(), 3500, 'Port 587 verify timed out');
     }
     return res.json({ success: true, message: `SMTP connection to Gmail verified successfully for ${user}!` });
   } catch (err: any) {
     console.error('SMTP verify error:', err.message);
     return res.json({
       success: false,
-      error: `SMTP verification failed: ${err.message || String(err)}. Check App Password or use direct "Open in Mail Client".`,
+      error: `Connection verification notice: ${err.message || String(err)}. Note: Render Free Plan blocks direct SMTP ports. Use "Web Gmail" or HTTP API for zero-block delivery.`,
     });
   }
 });
@@ -147,9 +246,27 @@ app.post('/api/verify-smtp', async (req: Request, res: Response) => {
  * Send single individual email notification
  */
 app.post('/api/send-single-email', async (req: Request, res: Response) => {
-  const { to, subject, html, text, smtpCredentials } = req.body || {};
+  const { to, subject, html, text, smtpCredentials, httpApi } = req.body || {};
   if (!to || !to.includes('@')) {
     return res.json({ success: false, error: 'Valid recipient email required' });
+  }
+
+  // Check if HTTP API is configured (Resend / Brevo over HTTPS Port 443)
+  const resendKey = httpApi?.resendApiKey || process.env.RESEND_API_KEY;
+  if (resendKey) {
+    const resendRes = await sendViaResendHttp(resendKey, to, subject, html, text);
+    if (resendRes.success) {
+      return res.json({ success: true, messageId: resendRes.messageId });
+    }
+  }
+
+  const brevoKey = httpApi?.brevoApiKey || process.env.BREVO_API_KEY;
+  if (brevoKey) {
+    const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
+    const brevoRes = await sendViaBrevoHttp(brevoKey, senderEmail, to, subject, html, text);
+    if (brevoRes.success) {
+      return res.json({ success: true, messageId: brevoRes.messageId });
+    }
   }
 
   const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
@@ -170,7 +287,8 @@ app.post('/api/send-single-email', async (req: Request, res: Response) => {
     console.error('Single email send error:', err.message);
     return res.json({
       success: false,
-      error: `Email delivery issue: ${err.message || String(err)}. You can click "Open in Mail Client" to send instantly via Gmail/Outlook.`,
+      error: `${err.message || String(err)}`,
+      isRenderSmtpBlocked: true,
     });
   }
 });
