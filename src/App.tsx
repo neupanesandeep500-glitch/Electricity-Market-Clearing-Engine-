@@ -56,23 +56,59 @@ import {
   FileText,
 } from 'lucide-react';
 
-export default function App() {
-  // Configuration
-  const [config, setConfig] = useState<GoogleSheetConfig>({
-    sheetId: DEFAULT_SHEET_ID,
-    sheetName: DEFAULT_SHEET_NAME,
-    googleFormUrl: DEFAULT_GOOGLE_FORM_URL,
-    autoSync: true,
-    syncIntervalSec: 30,
-  });
+const NEM_PERSISTENT_STORAGE_KEY = 'nem_market_full_state_v3';
+const NEM_PARTICIPANT_EMAILS_KEY = 'nem_participant_email_overrides_v2';
 
-  // Data & Engine State
-  const [buyers, setBuyers] = useState<RawBidOfferRecord[]>([]);
-  const [sellers, setSellers] = useState<RawBidOfferRecord[]>([]);
-  const [nSlots, setNSlots] = useState<number>(DEFAULT_FALLBACK_SLOTS);
-  const [results, setResults] = useState<Record<number, SlotClearingResult>>({});
-  const [hasComputed, setHasComputed] = useState<boolean>(false);
-  const [diagnostics, setDiagnostics] = useState<DiagnosticsData>({
+function getStoredParticipantEmails(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(NEM_PARTICIPANT_EMAILS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveParticipantEmailOverride(name: string, email: string): void {
+  try {
+    const map = getStoredParticipantEmails();
+    map[name] = email;
+    localStorage.setItem(NEM_PARTICIPANT_EMAILS_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+}
+
+function getStoredMarketState() {
+  try {
+    const raw = localStorage.getItem(NEM_PERSISTENT_STORAGE_KEY);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+export function App() {
+  const savedState = useRef(getStoredMarketState()).current;
+
+  // Configuration
+  const [config, setConfig] = useState<GoogleSheetConfig>(() => ({
+    sheetId: savedState?.config?.sheetId || DEFAULT_SHEET_ID,
+    sheetName: savedState?.config?.sheetName || DEFAULT_SHEET_NAME,
+    googleFormUrl: savedState?.config?.googleFormUrl || DEFAULT_GOOGLE_FORM_URL,
+    autoSync: savedState?.config?.autoSync !== undefined ? savedState.config.autoSync : true,
+    syncIntervalSec: savedState?.config?.syncIntervalSec || 30,
+  }));
+
+  // Data & Engine State (Restored from persistent localStorage across long inactivity)
+  const [buyers, setBuyers] = useState<RawBidOfferRecord[]>(() => savedState?.buyers || []);
+  const [sellers, setSellers] = useState<RawBidOfferRecord[]>(() => savedState?.sellers || []);
+  const [nSlots, setNSlots] = useState<number>(() => savedState?.nSlots || DEFAULT_FALLBACK_SLOTS);
+  const [results, setResults] = useState<Record<number, SlotClearingResult>>(() => savedState?.results || {});
+  const [hasComputed, setHasComputed] = useState<boolean>(() => savedState?.hasComputed || false);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsData>(() => savedState?.diagnostics || {
     rows_seen: 0,
     rows_skipped_no_role: 0,
     values_dropped_nan: 0,
@@ -89,20 +125,20 @@ export default function App() {
     duplicate_buyer_rows: 0,
     duplicate_seller_rows: 0,
   });
-  const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>([]);
-  const [participantSummaries, setParticipantSummaries] = useState<ParticipantSummaryItem[]>([]);
+  const [settlementRecords, setSettlementRecords] = useState<SettlementRecord[]>(() => savedState?.settlementRecords || []);
+  const [participantSummaries, setParticipantSummaries] = useState<ParticipantSummaryItem[]>(() => savedState?.participantSummaries || []);
 
   // Navigation & UI State
   const [activeTab, setActiveTab] = useState<
     'overview' | 'compute' | 'curves' | 'settlement' | 'participants' | 'emails' | 'diagnostics'
   >('compute');
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-  const [sourceType, setSourceType] = useState<'google-sheets' | 'demo' | 'csv-upload'>('google-sheets');
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(() => savedState?.lastSyncTime ? new Date(savedState.lastSyncTime) : null);
+  const [sourceType, setSourceType] = useState<'google-sheets' | 'demo' | 'csv-upload'>(() => savedState?.sourceType || 'google-sheets');
   const [error, setError] = useState<string | null>(null);
 
   // Modals & Auth
-  const [isBidsTakingActive, setIsBidsTakingActive] = useState<boolean>(true);
+  const [isBidsTakingActive, setIsBidsTakingActive] = useState<boolean>(() => savedState?.isBidsTakingActive !== undefined ? savedState.isBidsTakingActive : true);
   const [currentUser, setCurrentUser] = useState<UserAccount | null>(getCurrentUser());
   const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
   const [isUserManagementModalOpen, setIsUserManagementModalOpen] = useState(false);
@@ -118,21 +154,51 @@ export default function App() {
   const isBidsTakingActiveRef = useRef(isBidsTakingActive);
   isBidsTakingActiveRef.current = isBidsTakingActive;
 
+  // Helper to persist full market state across long browser gaps
+  const persistState = useCallback((partial?: any) => {
+    try {
+      const fullSnapshot = {
+        buyers,
+        sellers,
+        nSlots,
+        results,
+        hasComputed: hasComputedRef.current,
+        diagnostics,
+        settlementRecords,
+        participantSummaries,
+        isBidsTakingActive: isBidsTakingActiveRef.current,
+        lastSyncTime: new Date().toISOString(),
+        sourceType,
+        config,
+        ...partial,
+      };
+      localStorage.setItem(NEM_PERSISTENT_STORAGE_KEY, JSON.stringify(fullSnapshot));
+    } catch (e) {
+      console.warn('Failed to save market snapshot to localStorage', e);
+    }
+  }, [buyers, sellers, nSlots, results, diagnostics, settlementRecords, participantSummaries, sourceType, config]);
+
   // Handle Logout
   const handleLogout = () => {
     logoutUser();
     setCurrentUser(null);
   };
 
-  // Update a participant's email in memory and state
+  // Update a participant's email in memory and state, and persist across long gaps
   const handleUpdateParticipantEmail = useCallback((participantName: string, newEmail: string) => {
-    setParticipantSummaries((prev) =>
-      prev.map((p) => (p.name === participantName ? { ...p, email: newEmail } : p))
-    );
-    setSettlementRecords((prev) =>
-      prev.map((r) => (r.participant === participantName ? { ...r, email: newEmail } : r))
-    );
-  }, []);
+    saveParticipantEmailOverride(participantName, newEmail);
+
+    setParticipantSummaries((prev) => {
+      const updated = prev.map((p) => (p.name === participantName ? { ...p, email: newEmail } : p));
+      persistState({ participantSummaries: updated });
+      return updated;
+    });
+
+    setSettlementRecords((prev) => {
+      const updated = prev.map((r) => (r.participant === participantName ? { ...r, email: newEmail } : r));
+      return updated;
+    });
+  }, [persistState]);
 
   // Process raw CSV intake data
   const processCSVData = useCallback(
@@ -140,12 +206,18 @@ export default function App() {
       try {
         const { buyers: parsedBuyers, sellers: parsedSellers, diagnostics: diag, n_slots } = parseResponses(csvText);
 
-        setBuyers(parsedBuyers);
-        setSellers(parsedSellers);
+        // Apply saved participant email overrides so custom email corrections are never lost!
+        const emailOverrides = getStoredParticipantEmails();
+        const mergedBuyers = parsedBuyers.map((b) => emailOverrides[b.name] ? { ...b, email: emailOverrides[b.name] } : b);
+        const mergedSellers = parsedSellers.map((s) => emailOverrides[s.name] ? { ...s, email: emailOverrides[s.name] } : s);
+
+        setBuyers(mergedBuyers);
+        setSellers(mergedSellers);
         setNSlots(n_slots || 4);
         setDiagnostics(diag);
         setSourceType(source);
-        setLastSyncTime(new Date());
+        const now = new Date();
+        setLastSyncTime(now);
 
         // CRITICAL: If results have already been computed or bids are locked,
         // DO NOT wipe the computed market equilibrium unless this was an explicit user reset!
@@ -156,29 +228,39 @@ export default function App() {
           setHasComputed(false);
           hasComputedRef.current = false;
         }
+
         setError(null);
+
+        // Save snapshot to localStorage
+        try {
+          const snapshot = {
+            buyers: mergedBuyers,
+            sellers: mergedSellers,
+            nSlots: n_slots || 4,
+            diagnostics: diag,
+            sourceType: source,
+            lastSyncTime: now.toISOString(),
+            isBidsTakingActive: isBidsTakingActiveRef.current,
+            hasComputed: hasComputedRef.current,
+          };
+          localStorage.setItem(NEM_PERSISTENT_STORAGE_KEY, JSON.stringify(snapshot));
+        } catch {
+          // ignore
+        }
       } catch (err: any) {
         console.error('Failed to parse intake responses:', err);
-        // If already computed, keep results protected
         if (!hasComputedRef.current || isExplicitReset) {
-          setBuyers([]);
-          setSellers([]);
-          setResults({});
-          setSettlementRecords([]);
-          setParticipantSummaries([]);
-          setHasComputed(false);
-          hasComputedRef.current = false;
+          // Keep existing data if already populated rather than dropping to empty
+          setError(`Intake Notice: ${err.message || String(err)}`);
         }
-        setError(`Intake Notice: ${err.message || String(err)}`);
       }
     },
     []
   );
 
-  // Fetch from Google Sheet
+  // Fetch from Google Sheet with automatic retry and cold-start protection
   const handleSync = useCallback(
     async (isAuto = false, isExplicitReset = false) => {
-      // 1. If this is an auto-sync check, ABORT if market is already computed or bids are locked!
       if (isAuto) {
         if (hasComputedRef.current || !isBidsTakingActiveRef.current) {
           return;
@@ -196,20 +278,17 @@ export default function App() {
         processCSVData(csv, 'google-sheets', isExplicitReset);
       } catch (err: any) {
         console.warn('Google Sheet fetch error:', err.message);
-        if (!hasComputedRef.current) {
-          setBuyers([]);
-          setSellers([]);
-          setResults({});
-          setSettlementRecords([]);
-          setParticipantSummaries([]);
-          setHasComputed(false);
-          setError(`Notice: Could not load data from Google Sheet (${err.message}). Showing empty state (--).`);
+        // CRITICAL: Never wipe previously loaded or computed results on network or cold start timeout!
+        if (!hasComputedRef.current && buyers.length === 0 && sellers.length === 0) {
+          setError(`Notice: Could not load data from Google Sheet (${err.message}). If deploying on Render, the cloud server may be spinning up.`);
+        } else {
+          console.log('[Sync] Preserved existing session data during temporary sync interruption.');
         }
       } finally {
         setIsSyncing(false);
       }
     },
-    [config.sheetId, config.sheetName, processCSVData]
+    [config.sheetId, config.sheetName, processCSVData, buyers.length, sellers.length]
   );
 
   // Explicitly run computation to simulate market clearing results
@@ -237,26 +316,19 @@ export default function App() {
       setConfig((prev) => ({ ...prev, autoSync: false }));
       setError(null);
 
-      // Cache computed results in sessionStorage as backup
-      try {
-        sessionStorage.setItem(
-          'nem_market_cleared_cache',
-          JSON.stringify({
-            results: clearingResults,
-            settlementRecords: settlements,
-            participantSummaries: summaries,
-            nSlots,
-            timestamp: new Date().toISOString(),
-          })
-        );
-      } catch {
-        // quota ignore
-      }
+      // Persist computed market state to localStorage for instant restoration after long gap
+      persistState({
+        results: clearingResults,
+        settlementRecords: settlements,
+        participantSummaries: summaries,
+        hasComputed: true,
+        isBidsTakingActive: false,
+      });
     } catch (err: any) {
       console.error('Computation error:', err);
       setError(`Computation Error: ${err.message || String(err)}`);
     }
-  }, [buyers, sellers, nSlots]);
+  }, [buyers, sellers, nSlots, persistState]);
 
   // Lock / Unlock Bids Intake Toggle
   const handleToggleLockBids = useCallback(() => {
@@ -265,6 +337,7 @@ export default function App() {
       setIsBidsTakingActive(false);
       isBidsTakingActiveRef.current = false;
       setConfig((prev) => ({ ...prev, autoSync: false }));
+      persistState({ isBidsTakingActive: false });
     } else {
       // Re-open bids
       setIsBidsTakingActive(true);
@@ -274,11 +347,11 @@ export default function App() {
       setResults({});
       setSettlementRecords([]);
       setParticipantSummaries([]);
-      sessionStorage.removeItem('nem_market_cleared_cache');
+      localStorage.removeItem(NEM_PERSISTENT_STORAGE_KEY);
       setConfig((prev) => ({ ...prev, autoSync: true }));
       handleSync(false, true);
     }
-  }, [isBidsTakingActive, handleSync]);
+  }, [isBidsTakingActive, handleSync, persistState]);
 
   // Re-open Bids Taking & Sheet Sync
   const handleReopenBidsTaking = useCallback(() => {
@@ -289,7 +362,7 @@ export default function App() {
     setResults({});
     setSettlementRecords([]);
     setParticipantSummaries([]);
-    sessionStorage.removeItem('nem_market_cleared_cache');
+    localStorage.removeItem(NEM_PERSISTENT_STORAGE_KEY);
     setConfig((prev) => ({ ...prev, autoSync: true }));
     handleSync(false, true);
   }, [handleSync]);
@@ -299,9 +372,21 @@ export default function App() {
   useEffect(() => {
     if (!initialLoadExecuted.current) {
       initialLoadExecuted.current = true;
-      handleSync(true);
+      // If we don't have existing computed results or bids, perform initial sync
+      if (!hasComputedRef.current && buyers.length === 0 && sellers.length === 0) {
+        handleSync(true);
+      }
     }
-  }, [handleSync]);
+  }, [handleSync, buyers.length, sellers.length]);
+
+  // Keep-alive loop: Pings /api/health every 4 minutes while app is open
+  // Guarantees Render container never sleeps while the user is using the app!
+  useEffect(() => {
+    const keepAliveTimer = setInterval(() => {
+      fetch('/api/health').catch(() => {});
+    }, 4 * 60 * 1000);
+    return () => clearInterval(keepAliveTimer);
+  }, []);
 
   // Polling Interval: Auto-sync during intake before computation.
   // Once computation is done OR bids are locked, NEVER auto-refresh so users can analyze data undisturbed!
@@ -733,3 +818,5 @@ export default function App() {
     </div>
   );
 }
+
+export default App;

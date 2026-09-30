@@ -358,6 +358,114 @@ Generated: ${nowStr}
   return { subject, html, text: plainText };
 }
 
+export interface EmailProviderConfig {
+  provider: 'google_script' | 'brevo' | 'resend' | 'smtp';
+  googleAppsScriptUrl?: string;
+  brevoApiKey?: string;
+  resendApiKey?: string;
+  senderEmail?: string;
+  appPassword?: string;
+}
+
+const EMAIL_CONFIG_KEY = 'nepal_market_email_config_v3';
+
+export const DEFAULT_EMAIL_CONFIG: EmailProviderConfig = {
+  provider: 'google_script',
+  googleAppsScriptUrl: '',
+  brevoApiKey: '',
+  resendApiKey: '',
+  senderEmail: 'neupanesandeep500@gmail.com',
+  appPassword: 'kroetysmnrlvzomr',
+};
+
+/**
+ * Ready-to-paste Google Apps Script code that sends emails natively from Gmail with ZERO port blocking!
+ */
+export const GOOGLE_APPS_SCRIPT_TEMPLATE = `// -------------------------------------------------------------
+// Nepal Electricity Market Clearing Engine - Email Relay Script
+// -------------------------------------------------------------
+// 1. Go to https://script.google.com and click "New project"
+// 2. Paste this entire code into Code.gs
+// 3. Click "Deploy" -> "New deployment"
+// 4. Select type: "Web app"
+// 5. Execute as: "Me" | Who has access: "Anyone"
+// 6. Click "Deploy", authorize permissions, and copy the Web App URL!
+// -------------------------------------------------------------
+
+function doPost(e) {
+  try {
+    var data = JSON.parse(e.postData.contents);
+    
+    // Batch dispatch
+    if (data.action === "send_batch" && Array.isArray(data.jobs)) {
+      var sent = 0;
+      for (var i = 0; i < data.jobs.length; i++) {
+        var job = data.jobs[i];
+        if (job.to && job.to.indexOf("@") !== -1) {
+          MailApp.sendEmail({
+            to: job.to,
+            subject: job.subject,
+            htmlBody: job.html,
+            body: job.text || "",
+            name: "Nepal Electricity Market Clearing Engine"
+          });
+          sent++;
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ success: true, count: sent }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // Single email dispatch
+    if (data.to) {
+      MailApp.sendEmail({
+        to: data.to,
+        subject: data.subject,
+        htmlBody: data.html,
+        body: data.text || "",
+        name: "Nepal Electricity Market Clearing Engine"
+      });
+      return ContentService.createTextOutput(JSON.stringify({ success: true, messageId: "gas-" + new Date().getTime() }))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ success: true, message: "Relay ping OK" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+
+export function getEmailConfig(): EmailProviderConfig {
+  try {
+    const raw = localStorage.getItem(EMAIL_CONFIG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { ...DEFAULT_EMAIL_CONFIG, ...parsed };
+    }
+    // Check legacy resend key if present
+    const legacyResend = localStorage.getItem('nepal_market_resend_api_key');
+    if (legacyResend) {
+      return { ...DEFAULT_EMAIL_CONFIG, provider: 'resend', resendApiKey: legacyResend };
+    }
+  } catch {
+    // ignore
+  }
+  return DEFAULT_EMAIL_CONFIG;
+}
+
+export function saveEmailConfig(cfg: EmailProviderConfig): void {
+  try {
+    localStorage.setItem(EMAIL_CONFIG_KEY, JSON.stringify(cfg));
+    if (cfg.resendApiKey) {
+      localStorage.setItem('nepal_market_resend_api_key', cfg.resendApiKey);
+    }
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * Safe JSON parser helper to prevent "Unexpected end of JSON input" errors
  */
@@ -367,7 +475,7 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
     if (!text || !text.trim()) {
       return {
         ok: false,
-        error: `Render's free tier blocked direct SMTP connection. Click 'Web Gmail' next to the participant to dispatch in 1 click via your browser.`,
+        error: `Empty response from server (HTTP ${res.status}). Server may be waking up from sleep.`,
       };
     }
     try {
@@ -385,17 +493,23 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
 }
 
 /**
- * Verify SMTP connection
+ * Verify Email Provider connection (supports Google Apps Script, Brevo, Resend, and SMTP)
  */
-export async function verifySmtpConnection(smtpCredentials?: {
-  sender?: string;
-  password?: string;
-}): Promise<{ success: boolean; message?: string; error?: string }> {
+export async function verifyEmailProvider(config?: EmailProviderConfig): Promise<{ success: boolean; message?: string; error?: string }> {
+  const cfg = config || getEmailConfig();
+  const payload: any = {
+    provider: cfg.provider,
+    sender: cfg.senderEmail,
+    password: cfg.appPassword,
+    googleAppsScriptUrl: cfg.googleAppsScriptUrl,
+    httpApiKey: cfg.provider === 'brevo' ? cfg.brevoApiKey : cfg.provider === 'resend' ? cfg.resendApiKey : undefined,
+  };
+
   try {
-    const res = await fetch('/api/verify-smtp', {
+    const res = await fetch('/api/verify-email-provider', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(smtpCredentials || {}),
+      body: JSON.stringify(payload),
     });
     const parsed = await parseJsonSafely(res);
     if (parsed.data) {
@@ -405,6 +519,20 @@ export async function verifySmtpConnection(smtpCredentials?: {
   } catch (err: any) {
     return { success: false, error: err.message || String(err) };
   }
+}
+
+/**
+ * Verify SMTP connection (backwards compatible)
+ */
+export async function verifySmtpConnection(smtpCredentials?: {
+  sender?: string;
+  password?: string;
+}): Promise<{ success: boolean; message?: string; error?: string }> {
+  return verifyEmailProvider({
+    provider: 'smtp',
+    senderEmail: smtpCredentials?.sender,
+    appPassword: smtpCredentials?.password,
+  });
 }
 
 /**
@@ -418,13 +546,24 @@ export async function sendSingleNotification(
     text: string;
   },
   smtpCredentials?: { sender?: string; password?: string },
-  httpApi?: { resendApiKey?: string; brevoApiKey?: string }
-): Promise<{ success: boolean; messageId?: string; error?: string; isRenderSmtpBlocked?: boolean }> {
+  httpApi?: { resendApiKey?: string; brevoApiKey?: string; googleAppsScriptUrl?: string }
+): Promise<{ success: boolean; messageId?: string; error?: string; providerUsed?: string }> {
+  const currentCfg = getEmailConfig();
+  const mergedHttpApi = {
+    googleAppsScriptUrl: httpApi?.googleAppsScriptUrl || currentCfg.googleAppsScriptUrl,
+    brevoApiKey: httpApi?.brevoApiKey || currentCfg.brevoApiKey,
+    resendApiKey: httpApi?.resendApiKey || currentCfg.resendApiKey,
+  };
+  const creds = smtpCredentials || {
+    sender: currentCfg.senderEmail,
+    password: currentCfg.appPassword,
+  };
+
   try {
     const res = await fetch('/api/send-single-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ ...job, smtpCredentials, httpApi }),
+      body: JSON.stringify({ ...job, smtpCredentials: creds, httpApi: mergedHttpApi }),
     });
     const parsed = await parseJsonSafely(res);
     if (parsed.data) {
@@ -432,14 +571,12 @@ export async function sendSingleNotification(
     }
     return {
       success: false,
-      error: parsed.error || 'SMTP delivery issue. Click "Web Gmail" to send in 1 click.',
-      isRenderSmtpBlocked: true,
+      error: parsed.error || 'Email delivery failed. Please verify provider settings.',
     };
   } catch (err: any) {
     return {
       success: false,
-      error: `${err.message || String(err)}. Click "Web Gmail" to send directly.`,
-      isRenderSmtpBlocked: true,
+      error: err.message || String(err),
     };
   }
 }
@@ -459,7 +596,7 @@ export function generateMailtoLink(
 }
 
 /**
- * Generate direct Gmail Web link for one-click browser dispatch (100% immune to Render port blocks)
+ * Generate direct Gmail Web link for one-click browser dispatch
  */
 export function generateGmailWebLink(
   to: string,
@@ -481,7 +618,7 @@ export type ProgressCallback = (info: {
 }) => void;
 
 /**
- * Trigger batch email notification dispatch via server API with transparent failover
+ * Trigger batch email notification dispatch via server API with transparent multi-provider support
  */
 export async function sendBatchNotifications(
   jobs: {
@@ -496,7 +633,8 @@ export async function sendBatchNotifications(
   }[],
   dryRun = false,
   smtpCredentials?: { sender?: string; password?: string },
-  onProgress?: ProgressCallback
+  onProgress?: ProgressCallback,
+  httpApiOverride?: { resendApiKey?: string; brevoApiKey?: string; googleAppsScriptUrl?: string }
 ): Promise<EmailLogEntry[]> {
   if (dryRun) {
     return jobs.map((job, idx) => {
@@ -520,13 +658,24 @@ export async function sendBatchNotifications(
     });
   }
 
-  // Live SMTP dispatch:
-  // Step 1: Try high-speed pooled batch dispatch
+  // Load configured HTTP delivery API and SMTP settings
+  const emailCfg = getEmailConfig();
+  const httpApi = {
+    googleAppsScriptUrl: httpApiOverride?.googleAppsScriptUrl || emailCfg.googleAppsScriptUrl,
+    brevoApiKey: httpApiOverride?.brevoApiKey || emailCfg.brevoApiKey,
+    resendApiKey: httpApiOverride?.resendApiKey || emailCfg.resendApiKey,
+  };
+  const creds = smtpCredentials || {
+    sender: emailCfg.senderEmail,
+    password: emailCfg.appPassword,
+  };
+
+  // Attempt multi-provider batch dispatch via /api/send-emails
   try {
     const res = await fetch('/api/send-emails', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ jobs, dryRun: false, smtpCredentials }),
+      body: JSON.stringify({ jobs, dryRun: false, smtpCredentials: creds, httpApi }),
     });
 
     const parsed = await parseJsonSafely(res);
@@ -547,8 +696,7 @@ export async function sendBatchNotifications(
     console.warn('[Dispatch] Server batch fetch encountered network issue, activating resilient individual failover...', err);
   }
 
-  // Step 2: Resilient Failover - Dispatch individually via /api/send-single-email
-  // Completely immune to Render / cloud proxy connection timeouts
+  // Resilient Failover: Dispatch individually via /api/send-single-email
   const logs: EmailLogEntry[] = [];
   for (let i = 0; i < jobs.length; i++) {
     const job = jobs[i];
@@ -576,7 +724,8 @@ export async function sendBatchNotifications(
           html: job.html,
           text: job.text,
         },
-        smtpCredentials
+        creds,
+        httpApi
       );
 
       if (singleRes.success) {
@@ -599,7 +748,7 @@ export async function sendBatchNotifications(
           email: job.email,
           status: 'failed',
           attempts: 1,
-          error: singleRes.error || 'SMTP delivery issue. Check App Password or use "Open in Mail Client".',
+          error: singleRes.error || 'Delivery failed. Check email provider configuration.',
           awarded_mw: job.awarded_mw,
           amount_nrs: job.amount_nrs,
           sent_at: '',
@@ -624,7 +773,7 @@ export async function sendBatchNotifications(
     }
 
     if (i < jobs.length - 1) {
-      await new Promise((r) => setTimeout(r, 120));
+      await new Promise((r) => setTimeout(r, 80));
     }
   }
 
