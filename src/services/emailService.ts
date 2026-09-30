@@ -455,8 +455,16 @@ export function generateMailtoLink(
   return `mailto:${encTo}?subject=${encSubject}&body=${encBody}`;
 }
 
+export type ProgressCallback = (info: {
+  current: number;
+  total: number;
+  name: string;
+  status: 'sent' | 'failed' | 'dry_run' | 'no_email';
+  error?: string;
+}) => void;
+
 /**
- * Trigger batch email notification dispatch via server API or dry-run
+ * Trigger batch email notification dispatch via server API with transparent failover
  */
 export async function sendBatchNotifications(
   jobs: {
@@ -470,43 +478,138 @@ export async function sendBatchNotifications(
     amount_nrs: number;
   }[],
   dryRun = false,
-  smtpCredentials?: { sender?: string; password?: string }
+  smtpCredentials?: { sender?: string; password?: string },
+  onProgress?: ProgressCallback
 ): Promise<EmailLogEntry[]> {
+  if (dryRun) {
+    return jobs.map((job, idx) => {
+      const isEmailValid = !!(job.email && job.email.includes('@'));
+      onProgress?.({
+        current: idx + 1,
+        total: jobs.length,
+        name: job.name,
+        status: isEmailValid ? 'dry_run' : 'no_email',
+      });
+      return {
+        name: job.name,
+        role: job.role,
+        email: job.email,
+        status: isEmailValid ? 'dry_run' : 'no_email',
+        attempts: 0,
+        awarded_mw: job.awarded_mw,
+        amount_nrs: job.amount_nrs,
+        sent_at: new Date().toISOString(),
+      };
+    });
+  }
+
+  // Live SMTP dispatch:
+  // Step 1: Try high-speed pooled batch dispatch
   try {
     const res = await fetch('/api/send-emails', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify({ jobs, dryRun, smtpCredentials }),
+      body: JSON.stringify({ jobs, dryRun: false, smtpCredentials }),
     });
 
     const parsed = await parseJsonSafely(res);
-    if (parsed.data && parsed.data.logs) {
+    if (parsed.ok && parsed.data && Array.isArray(parsed.data.logs) && parsed.data.logs.length > 0) {
+      parsed.data.logs.forEach((log: EmailLogEntry, idx: number) => {
+        onProgress?.({
+          current: idx + 1,
+          total: jobs.length,
+          name: log.name,
+          status: log.status,
+          error: log.error,
+        });
+      });
       return parsed.data.logs;
-    } else {
-      const errorMsg = parsed.error || parsed.data?.error || `Server responded with status ${res.status}`;
-      return jobs.map((job) => ({
+    }
+    console.warn('[Dispatch] Server batch returned empty or non-OK response, activating resilient individual failover...');
+  } catch (err: any) {
+    console.warn('[Dispatch] Server batch fetch encountered network issue, activating resilient individual failover...', err);
+  }
+
+  // Step 2: Resilient Failover - Dispatch individually via /api/send-single-email
+  // Completely immune to Render / cloud proxy connection timeouts
+  const logs: EmailLogEntry[] = [];
+  for (let i = 0; i < jobs.length; i++) {
+    const job = jobs[i];
+    if (!job.email || !job.email.includes('@')) {
+      const entry: EmailLogEntry = {
         name: job.name,
         role: job.role,
-        email: job.email,
-        status: job.email && job.email.includes('@') ? (dryRun ? 'dry_run' : 'failed') : 'no_email',
-        attempts: 1,
-        error: errorMsg,
+        email: '',
+        status: 'no_email',
+        attempts: 0,
         awarded_mw: job.awarded_mw,
         amount_nrs: job.amount_nrs,
         sent_at: '',
-      }));
+      };
+      logs.push(entry);
+      onProgress?.({ current: i + 1, total: jobs.length, name: job.name, status: 'no_email' });
+      continue;
     }
-  } catch (fetchErr: any) {
-    return jobs.map((job) => ({
-      name: job.name,
-      role: job.role,
-      email: job.email,
-      status: dryRun ? (job.email ? 'dry_run' : 'no_email') : 'failed',
-      attempts: 1,
-      error: dryRun ? undefined : (fetchErr.message || 'Network error reaching email dispatch service. Try "Open in Mail Client".'),
-      awarded_mw: job.awarded_mw,
-      amount_nrs: job.amount_nrs,
-      sent_at: dryRun ? new Date().toISOString() : '',
-    }));
+
+    try {
+      const singleRes = await sendSingleNotification(
+        {
+          to: job.email,
+          subject: job.subject,
+          html: job.html,
+          text: job.text,
+        },
+        smtpCredentials
+      );
+
+      if (singleRes.success) {
+        const entry: EmailLogEntry = {
+          name: job.name,
+          role: job.role,
+          email: job.email,
+          status: 'sent',
+          attempts: 1,
+          awarded_mw: job.awarded_mw,
+          amount_nrs: job.amount_nrs,
+          sent_at: new Date().toISOString(),
+        };
+        logs.push(entry);
+        onProgress?.({ current: i + 1, total: jobs.length, name: job.name, status: 'sent' });
+      } else {
+        const entry: EmailLogEntry = {
+          name: job.name,
+          role: job.role,
+          email: job.email,
+          status: 'failed',
+          attempts: 1,
+          error: singleRes.error || 'SMTP delivery issue. Check App Password or use "Open in Mail Client".',
+          awarded_mw: job.awarded_mw,
+          amount_nrs: job.amount_nrs,
+          sent_at: '',
+        };
+        logs.push(entry);
+        onProgress?.({ current: i + 1, total: jobs.length, name: job.name, status: 'failed', error: entry.error });
+      }
+    } catch (singleErr: any) {
+      const entry: EmailLogEntry = {
+        name: job.name,
+        role: job.role,
+        email: job.email,
+        status: 'failed',
+        attempts: 1,
+        error: singleErr.message || 'Network error reaching dispatch server.',
+        awarded_mw: job.awarded_mw,
+        amount_nrs: job.amount_nrs,
+        sent_at: '',
+      };
+      logs.push(entry);
+      onProgress?.({ current: i + 1, total: jobs.length, name: job.name, status: 'failed', error: entry.error });
+    }
+
+    if (i < jobs.length - 1) {
+      await new Promise((r) => setTimeout(r, 120));
+    }
   }
+
+  return logs;
 }

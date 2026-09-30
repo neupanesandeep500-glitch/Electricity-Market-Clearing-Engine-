@@ -234,7 +234,11 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
     try {
       const smtpCredentials = senderEmail && appPassword ? { sender: senderEmail, password: appPassword } : undefined;
-      const resultLogs = await sendBatchNotifications(jobs, dryRun, smtpCredentials);
+      const resultLogs = await sendBatchNotifications(jobs, dryRun, smtpCredentials, (progress) => {
+        setStatusMessage(
+          `Dispatching live notifications (${progress.current}/${progress.total}): ${progress.name}...`
+        );
+      });
       setLogs(resultLogs);
       const sentCount = resultLogs.filter((l) => l.status === 'sent').length;
       const failedCount = resultLogs.filter((l) => l.status === 'failed').length;
