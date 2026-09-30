@@ -127,4 +127,5 @@ export interface UserAccount {
   password?: string;
   createdAt: string;
   isSystemUser?: boolean;
+  disabled?: boolean;
 }

@@ -700,6 +700,7 @@ export default function App() {
         onUploadCSV={(csv) => {
           processCSVData(csv, 'csv-upload');
         }}
+        onOpenUserManagement={() => setIsUserManagementModalOpen(true)}
       />
 
       <EmailPreviewModal

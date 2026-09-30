@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { UserAccount, UserRole } from '../types';
-import { authenticateUser, INBUILT_ADMIN, INBUILT_USER } from '../services/authService';
+import { authenticateWithDetails } from '../services/authService';
 import { Lock, Mail, KeyRound, ShieldCheck, UserCheck, AlertCircle, ArrowRight, Zap, Info } from 'lucide-react';
 
 interface LoginModalProps {
@@ -28,11 +28,16 @@ export const LoginModal: React.FC<LoginModalProps> = ({ isOpen, onLoginSuccess }
     setError(null);
 
     setTimeout(() => {
-      const user = authenticateUser(email, password);
-      if (user) {
-        onLoginSuccess(user);
+      const auth = authenticateWithDetails(email, password);
+      if (auth.success && auth.user) {
+        if (auth.user.role !== selectedRole) {
+          setError(`Role Mismatch: This account is registered as ${auth.user.role}, not ${selectedRole}. Please select the ${auth.user.role} tab above.`);
+          setIsLoading(false);
+          return;
+        }
+        onLoginSuccess(auth.user);
       } else {
-        setError('Invalid credentials for selected role. Please check your Email and Password.');
+        setError(auth.error || 'Invalid credentials for selected role. Please check your Email and Password.');
       }
       setIsLoading(false);
     }, 200);

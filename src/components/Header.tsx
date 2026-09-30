@@ -146,11 +146,11 @@ export const Header: React.FC<HeaderProps> = ({
             {isAdmin && (
               <button
                 onClick={onOpenUserManagement}
-                className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold rounded-lg bg-amber-400/20 hover:bg-amber-400/30 text-amber-200 border border-amber-400/40 transition-colors"
-                title="Manage and create user accounts (Admin Only)"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold rounded-lg bg-amber-400/25 hover:bg-amber-400/35 text-amber-200 border border-amber-400/40 transition-colors shadow-xs cursor-pointer"
+                title="Admin Section: Manage user accounts & inbuilt Jeevan account"
               >
                 <Users className="w-3.5 h-3.5 text-amber-400" />
-                <span className="hidden lg:inline">Users</span>
+                <span className="inline">Admin Accounts</span>
               </button>
             )}
 

@@ -3,15 +3,16 @@
  * Strict Role-Based Access Control (ADMIN vs USERS)
  * Inbuilt accounts:
  * - Admin: neupanesandeep500@gmaail.com / Sarthvik@30
- * - User: jeevan.umh@gmail.com / Users123
+ * - Inbuilt User: jeevan.umh@gmail.com / Users123 (Fully configurable, can be enabled/disabled, edited, or deleted by Admin)
  */
 
 import { UserAccount, UserRole } from '../types';
 
 const USERS_STORAGE_KEY = 'nepal_market_users_v2';
 const CURRENT_USER_KEY = 'nepal_market_auth_user_v2';
+const DELETED_USERS_KEY = 'nepal_market_deleted_users_v2';
 
-// Inbuilt protected accounts exactly as requested
+// Inbuilt protected accounts
 export const INBUILT_ADMIN: UserAccount = {
   id: 'usr_admin_sandeep',
   email: 'neupanesandeep500@gmaail.com', // also supports neupanesandeep500@gmail.com
@@ -20,6 +21,7 @@ export const INBUILT_ADMIN: UserAccount = {
   password: 'Sarthvik@30',
   createdAt: '2026-06-26T00:00:00.000Z',
   isSystemUser: true,
+  disabled: false,
 };
 
 export const INBUILT_USER: UserAccount = {
@@ -30,99 +32,185 @@ export const INBUILT_USER: UserAccount = {
   password: 'Users123',
   createdAt: '2026-06-26T00:00:00.000Z',
   isSystemUser: true,
+  disabled: false,
 };
 
 /**
- * Initialize storage with inbuilt accounts
+ * Get list of explicitly deleted user IDs so they are not resurrected
+ */
+export function getDeletedUserIds(): string[] {
+  try {
+    const raw = localStorage.getItem(DELETED_USERS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveDeletedUserId(id: string): void {
+  try {
+    const list = getDeletedUserIds();
+    if (!list.includes(id)) {
+      list.push(id);
+      localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(list));
+    }
+  } catch (e) {
+    console.error('Failed to save deleted user id', e);
+  }
+}
+
+export function removeDeletedUserId(id: string): void {
+  try {
+    const list = getDeletedUserIds().filter((d) => d !== id);
+    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(list));
+  } catch (e) {
+    console.error('Failed to remove deleted user id', e);
+  }
+}
+
+/**
+ * Initialize and get stored users list.
+ * Respects admin modifications, disabled states, and deletions.
  */
 export function getStoredUsers(): UserAccount[] {
   try {
     const raw = localStorage.getItem(USERS_STORAGE_KEY);
+    const deletedIds = getDeletedUserIds();
+
     if (!raw) {
-      const initial = [INBUILT_ADMIN, INBUILT_USER];
+      // First boot: populate default accounts unless already marked as deleted
+      const initial: UserAccount[] = [INBUILT_ADMIN];
+      if (!deletedIds.includes(INBUILT_USER.id)) {
+        initial.push(INBUILT_USER);
+      }
       localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(initial));
       return initial;
     }
+
     const parsed: UserAccount[] = JSON.parse(raw);
-    // Ensure inbuilt accounts are always present
-    const hasAdmin = parsed.some(
-      (u) => u.email.toLowerCase() === INBUILT_ADMIN.email.toLowerCase()
-    );
-    const hasUser = parsed.some(
-      (u) => u.email.toLowerCase() === INBUILT_USER.email.toLowerCase()
-    );
 
-    let updated = [...parsed];
-    if (!hasAdmin) updated.unshift(INBUILT_ADMIN);
-    if (!hasUser) updated.push(INBUILT_USER);
+    // Filter out any users that have been deleted
+    let filtered = parsed.filter((u) => !deletedIds.includes(u.id));
 
-    // Save back if missing
-    if (!hasAdmin || !hasUser) {
-      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
+    // Ensure at least one ADMIN account exists to prevent complete lockout
+    const hasAdmin = filtered.some((u) => u.role === 'ADMIN');
+    if (!hasAdmin) {
+      filtered.unshift(INBUILT_ADMIN);
+      localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(filtered));
     }
-    return updated;
+
+    return filtered;
   } catch {
     return [INBUILT_ADMIN, INBUILT_USER];
   }
 }
 
+export interface AuthResult {
+  success: boolean;
+  user?: UserAccount;
+  error?: string;
+}
+
 /**
- * Authenticate credentials
+ * Authenticate credentials with comprehensive error messages
+ * Checks if account exists, if it is disabled, and if password matches
  */
-export function authenticateUser(emailInput: string, passwordInput: string): UserAccount | null {
+export function authenticateWithDetails(emailInput: string, passwordInput: string): AuthResult {
   const cleanEmail = emailInput.trim().toLowerCase();
   const cleanPassword = passwordInput.trim();
 
-  // Direct check for admin email spelling variants (user typed neupanesandeep500@gmaail.com)
-  if (
-    (cleanEmail === 'neupanesandeep500@gmaail.com' || cleanEmail === 'neupanesandeep500@gmail.com') &&
-    cleanPassword === 'Sarthvik@30'
-  ) {
-    saveCurrentUser(INBUILT_ADMIN);
-    return INBUILT_ADMIN;
+  if (!cleanEmail || !cleanPassword) {
+    return { success: false, error: 'Please enter both Email and Password.' };
   }
 
-  // Direct check for default user
-  if (cleanEmail === 'jeevan.umh@gmail.com' && cleanPassword === 'Users123') {
-    saveCurrentUser(INBUILT_USER);
-    return INBUILT_USER;
-  }
-
-  // Check stored database
   const allUsers = getStoredUsers();
-  const found = allUsers.find(
-    (u) => u.email.toLowerCase() === cleanEmail && (u.password || '').trim() === cleanPassword
-  );
 
-  if (found) {
-    const safeUser: UserAccount = {
-      id: found.id,
-      email: found.email,
-      name: found.name,
-      role: found.role,
-      createdAt: found.createdAt,
-      isSystemUser: found.isSystemUser,
-    };
-    saveCurrentUser(safeUser);
-    return safeUser;
+  // Find user by email
+  const found = allUsers.find((u) => {
+    const userEmail = u.email.toLowerCase().trim();
+    if (userEmail === cleanEmail) return true;
+
+    // Support admin typo: neupanesandeep500@gmaail.com vs neupanesandeep500@gmail.com
+    if (
+      (u.id === 'usr_admin_sandeep' || u.role === 'ADMIN') &&
+      (userEmail === 'neupanesandeep500@gmaail.com' || userEmail === 'neupanesandeep500@gmail.com') &&
+      (cleanEmail === 'neupanesandeep500@gmaail.com' || cleanEmail === 'neupanesandeep500@gmail.com')
+    ) {
+      return true;
+    }
+
+    return false;
+  });
+
+  if (!found) {
+    const deletedIds = getDeletedUserIds();
+    if (deletedIds.includes('usr_user_jeevan') && cleanEmail === 'jeevan.umh@gmail.com') {
+      return {
+        success: false,
+        error: 'Account Deleted: The Jeevan participant account was removed by the administrator.',
+      };
+    }
+    return { success: false, error: 'No account found matching this email address.' };
   }
 
-  return null;
+  // Check if account has been disabled by Admin
+  if (found.disabled) {
+    return {
+      success: false,
+      error: `Account Disabled: The account "${found.name}" (${found.email}) has been disabled by the administrator. Contact Admin to re-enable access.`,
+    };
+  }
+
+  // Verify password
+  const storedPassword = (found.password || '').trim();
+  if (storedPassword !== cleanPassword) {
+    return { success: false, error: 'Invalid password. Please check your credentials and try again.' };
+  }
+
+  const safeUser: UserAccount = {
+    id: found.id,
+    email: found.email,
+    name: found.name,
+    role: found.role,
+    createdAt: found.createdAt,
+    isSystemUser: found.isSystemUser,
+    disabled: found.disabled,
+  };
+
+  saveCurrentUser(safeUser);
+  return { success: true, user: safeUser };
+}
+
+/**
+ * Authenticate credentials (backwards compatible helper)
+ */
+export function authenticateUser(emailInput: string, passwordInput: string): UserAccount | null {
+  const res = authenticateWithDetails(emailInput, passwordInput);
+  return res.success && res.user ? res.user : null;
 }
 
 export function getCurrentUser(): UserAccount | null {
   try {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (!raw) return null;
-    return JSON.parse(raw);
+    const sessionUser: UserAccount = JSON.parse(raw);
+
+    // Validate that user still exists and has not been disabled or deleted
+    const allUsers = getStoredUsers();
+    const currentInDb = allUsers.find((u) => u.id === sessionUser.id);
+    if (!currentInDb || currentInDb.disabled) {
+      logoutUser();
+      return null;
+    }
+
+    return sessionUser;
   } catch {
     return null;
   }
 }
 
-export function saveCurrentUser(user: UserAccount | null) {
+export function saveCurrentUser(user: UserAccount | null): void {
   if (user) {
-    // Exclude password from active session
     const sessionUser = { ...user };
     delete sessionUser.password;
     localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(sessionUser));
@@ -131,7 +219,7 @@ export function saveCurrentUser(user: UserAccount | null) {
   }
 }
 
-export function logoutUser() {
+export function logoutUser(): void {
   saveCurrentUser(null);
 }
 
@@ -140,7 +228,7 @@ export function logoutUser() {
  */
 export function createNewUser(
   creator: UserAccount,
-  data: { email: string; name: string; role: UserRole; password: string }
+  data: { email: string; name: string; role: UserRole; password: string; disabled?: boolean }
 ): { success: boolean; error?: string; user?: UserAccount } {
   if (creator.role !== 'ADMIN') {
     return { success: false, error: 'Unauthorized: Only an ADMIN can create user accounts.' };
@@ -151,7 +239,7 @@ export function createNewUser(
     return { success: false, error: 'Please provide a valid email address.' };
   }
 
-  if (!data.password || data.password.length < 4) {
+  if (!data.password || data.password.trim().length < 4) {
     return { success: false, error: 'Password must be at least 4 characters long.' };
   }
 
@@ -168,6 +256,7 @@ export function createNewUser(
     password: data.password.trim(),
     createdAt: new Date().toISOString(),
     isSystemUser: false,
+    disabled: !!data.disabled,
   };
 
   const updated = [...existing, newUser];
@@ -177,12 +266,12 @@ export function createNewUser(
 }
 
 /**
- * Admin: Modify/Edit an existing user account
+ * Admin: Modify/Edit an existing user account (including Jeevan's account)
  */
 export function updateUser(
   creator: UserAccount,
   userId: string,
-  data: { email?: string; name?: string; role?: UserRole; password?: string }
+  data: { email?: string; name?: string; role?: UserRole; password?: string; disabled?: boolean }
 ): { success: boolean; error?: string; user?: UserAccount } {
   if (creator.role !== 'ADMIN') {
     return { success: false, error: 'Unauthorized: Only an ADMIN can modify user accounts.' };
@@ -196,6 +285,11 @@ export function updateUser(
   }
 
   const current = existing[index];
+
+  // Prevent disabling self
+  if (creator.id === userId && data.disabled === true) {
+    return { success: false, error: 'Cannot disable your own active administrator account.' };
+  }
 
   if (data.email) {
     const cleanEmail = data.email.trim().toLowerCase();
@@ -211,10 +305,53 @@ export function updateUser(
 
   const updatedUser: UserAccount = {
     ...current,
-    name: data.name ? data.name.trim() : current.name,
-    email: data.email ? data.email.trim().toLowerCase() : current.email,
+    name: data.name !== undefined ? data.name.trim() : current.name,
+    email: data.email !== undefined ? data.email.trim().toLowerCase() : current.email,
     role: data.role || current.role,
     password: data.password && data.password.trim().length >= 4 ? data.password.trim() : current.password,
+    disabled: data.disabled !== undefined ? data.disabled : current.disabled,
+  };
+
+  const updatedList = [...existing];
+  updatedList[index] = updatedUser;
+  localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updatedList));
+
+  // If the active session is the updated user, update session as well
+  const currentSession = getCurrentUser();
+  if (currentSession && currentSession.id === userId) {
+    saveCurrentUser(updatedUser);
+  }
+
+  return { success: true, user: updatedUser };
+}
+
+/**
+ * Admin: Enable or Disable a user account
+ */
+export function toggleUserStatus(
+  creator: UserAccount,
+  userId: string
+): { success: boolean; error?: string; user?: UserAccount } {
+  if (creator.role !== 'ADMIN') {
+    return { success: false, error: 'Unauthorized: Only an ADMIN can change account status.' };
+  }
+
+  if (creator.id === userId) {
+    return { success: false, error: 'Cannot disable your own active administrator account.' };
+  }
+
+  const existing = getStoredUsers();
+  const index = existing.findIndex((u) => u.id === userId);
+  if (index === -1) {
+    return { success: false, error: 'User not found.' };
+  }
+
+  const target = existing[index];
+  const newDisabled = !target.disabled;
+
+  const updatedUser: UserAccount = {
+    ...target,
+    disabled: newDisabled,
   };
 
   const updatedList = [...existing];
@@ -225,7 +362,7 @@ export function updateUser(
 }
 
 /**
- * Admin: Delete a user account (Admin can delete any other user)
+ * Admin: Delete a user account (Can delete any other user, including Jeevan's inbuilt account)
  */
 export function deleteUser(creator: UserAccount, userId: string): { success: boolean; error?: string } {
   if (creator.role !== 'ADMIN') {
@@ -243,8 +380,28 @@ export function deleteUser(creator: UserAccount, userId: string): { success: boo
     return { success: false, error: 'User not found.' };
   }
 
+  // Record into deletedIds list so it won't be resurrected
+  saveDeletedUserId(userId);
+
   const filtered = existing.filter((u) => u.id !== userId);
   localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(filtered));
 
   return { success: true };
+}
+
+/**
+ * Admin: Restore the default Jeevan inbuilt account
+ */
+export function restoreInbuiltJeevan(creator: UserAccount): { success: boolean; error?: string; user?: UserAccount } {
+  if (creator.role !== 'ADMIN') {
+    return { success: false, error: 'Unauthorized: Only an ADMIN can restore inbuilt accounts.' };
+  }
+
+  removeDeletedUserId(INBUILT_USER.id);
+  const existing = getStoredUsers().filter((u) => u.id !== INBUILT_USER.id);
+  const restored: UserAccount = { ...INBUILT_USER, disabled: false };
+  const updated = [...existing, restored];
+  localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(updated));
+
+  return { success: true, user: restored };
 }

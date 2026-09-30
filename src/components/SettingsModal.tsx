@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { GoogleSheetConfig } from '../types';
-import { Settings, Save, RefreshCw, UploadCloud, X, FileText, Database } from 'lucide-react';
+import { Settings, Save, RefreshCw, UploadCloud, X, FileText, Database, Users } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -9,6 +9,7 @@ interface SettingsModalProps {
   onSaveConfig: (newConfig: GoogleSheetConfig) => void;
   onLoadDemoData: () => void;
   onUploadCSV: (csvText: string) => void;
+  onOpenUserManagement?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -18,6 +19,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSaveConfig,
   onLoadDemoData,
   onUploadCSV,
+  onOpenUserManagement,
 }) => {
   const [sheetId, setSheetId] = useState(config.sheetId);
   const [sheetName, setSheetName] = useState(config.sheetName);
@@ -193,6 +195,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </label>
             </div>
           </div>
+
+          {/* 5. User & Inbuilt Accounts Administration (Admin Portal) */}
+          {onOpenUserManagement && (
+            <div className="space-y-3 pt-4 border-t border-slate-100">
+              <div className="p-3.5 bg-gradient-to-r from-indigo-50/70 via-slate-50 to-amber-50/50 border border-indigo-100 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-indigo-700" />
+                    <span>Admin User Accounts &amp; Jeevan Inbuilt Account</span>
+                  </h4>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Enable/Disable, edit email and password, or delete the Jeevan account and manage all participant logins.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenUserManagement();
+                  }}
+                  className="px-3 py-1.5 bg-indigo-900 hover:bg-indigo-800 text-white rounded-lg font-bold text-xs shadow-xs transition-colors shrink-0 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Users className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Open Account Manager</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
