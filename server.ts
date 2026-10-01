@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import net from 'net';
 import nodemailer, { Transporter, SendMailOptions, SentMessageInfo } from 'nodemailer';
 import dotenv from 'dotenv';
 import { generateStandaloneHTML } from './src/engine/standaloneHtmlGenerator';
@@ -219,6 +220,56 @@ function withTimeout<T>(promise: Promise<T>, ms: number, errMsg: string): Promis
 }
 
 /**
+ * Fast TCP connection probing to check if outbound SMTP ports (465/587) are reachable
+ * Prevents Render reverse proxy 30s timeouts when cloud firewalls drop outbound SMTP
+ */
+let smtpConnectivityCache: { reachable: boolean; lastChecked: number; host: string; port: number } | null = null;
+
+async function checkSmtpReachable(host: string, port: number, timeoutMs = 2000): Promise<boolean> {
+  const now = Date.now();
+  if (
+    smtpConnectivityCache &&
+    smtpConnectivityCache.host === host &&
+    smtpConnectivityCache.port === port &&
+    now - smtpConnectivityCache.lastChecked < 30000
+  ) {
+    return smtpConnectivityCache.reachable;
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = net.createConnection({ host, port, timeout: timeoutMs });
+
+    socket.on('connect', () => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+        smtpConnectivityCache = { reachable: true, lastChecked: Date.now(), host, port };
+        resolve(true);
+      }
+    });
+
+    socket.on('timeout', () => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+        smtpConnectivityCache = { reachable: false, lastChecked: Date.now(), host, port };
+        resolve(false);
+      }
+    });
+
+    socket.on('error', () => {
+      if (!settled) {
+        settled = true;
+        socket.destroy();
+        smtpConnectivityCache = { reachable: false, lastChecked: Date.now(), host, port };
+        resolve(false);
+      }
+    });
+  });
+}
+
+/**
  * Creates clean, safe non-pooled mail transporter with explicit error listener
  */
 function createDirectMailTransporter(
@@ -424,6 +475,16 @@ async function sendMailWithFallback(
 
   const primaryPort = customPort || (host === 'smtp.gmail.com' ? 465 : 465);
 
+  const isPrimary = await checkSmtpReachable(host, primaryPort, 2000);
+  if (!isPrimary) {
+    const is587 = await checkSmtpReachable(host, 587, 2000);
+    if (!is587) {
+      throw new Error(
+        `Outbound SMTP connection to ${host}:${primaryPort}/587 timed out. Note: On Render free tier services, outbound SMTP ports are blocked by Render. To send emails on Render, please configure Google Apps Script Relay (free via your Gmail) or Brevo API in Email Settings.`
+      );
+    }
+  }
+
   try {
     // Primary attempt (typically Port 465 SSL)
     const tpPrimary = createDirectMailTransporter(user, cleanPass, primaryPort, primaryPort === 465, host);
@@ -609,13 +670,18 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
   const pass = password ? password.replace(/\s+/g, '') : getEnvEmailPassword();
 
   try {
-    let tp = createDirectMailTransporter(user, pass, 465, true);
-    try {
-      await withTimeout(tp.verify(), 4000, 'Port 465 verify timed out');
-    } catch {
-      tp = createDirectMailTransporter(user, pass, 587, false);
-      await withTimeout(tp.verify(), 4000, 'Port 587 verify timed out');
+    const is465 = await checkSmtpReachable('smtp.gmail.com', 465, 2000);
+    const is587 = is465 ? true : await checkSmtpReachable('smtp.gmail.com', 587, 2000);
+    if (!is465 && !is587) {
+      return res.status(200).json({
+        success: false,
+        error:
+          'Outbound SMTP ports (465/587) timed out. Note: On Render free tier services, raw outbound SMTP ports are blocked by Render. To send emails on Render, please configure Google Apps Script Relay (free via your Gmail) or Brevo API in Email Provider Settings.',
+      });
     }
+
+    let tp = createDirectMailTransporter(user, pass, is465 ? 465 : 587, is465);
+    await withTimeout(tp.verify(), 4000, 'SMTP verify timed out');
     return res.status(200).json({ success: true, message: `SMTP connection verified successfully for ${user}!` });
   } catch (err: any) {
     console.error('SMTP verify error:', err.message);
@@ -730,6 +796,40 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
         }
       } catch (gasErr: any) {
         console.warn('[Dispatch] Google Apps Script bulk batch call failed, falling back to chunked dispatch:', gasErr.message);
+      }
+    }
+
+    // Fast check: If no HTTP relay is present, probe SMTP port before starting chunked loop
+    // to prevent hanging connection and 30s timeout on Render reverse proxy
+    const hasHttpRelay = !!(
+      scriptUrl ||
+      getEnvBrevoKey() ||
+      getEnvResendKey() ||
+      getEnvSendGridKey() ||
+      httpApi?.brevoApiKey ||
+      httpApi?.resendApiKey
+    );
+
+    if (!hasHttpRelay) {
+      const is465Reachable = await checkSmtpReachable(getEnvSmtpHost(), 465, 2000);
+      const is587Reachable = is465Reachable ? true : await checkSmtpReachable(getEnvSmtpHost(), 587, 2000);
+      if (!is465Reachable && !is587Reachable) {
+        return res.status(200).json({
+          success: false,
+          error:
+            "Outbound SMTP connection to smtp.gmail.com:465/587 timed out. Note: On Render free tier services, raw outbound SMTP ports are blocked by Render's firewall. To send 1-click email notifications on Render, please configure Google Apps Script Relay (free via your Gmail) or Brevo API in Email Provider Settings.",
+          logs: jobs.map((j) => ({
+            name: j.name,
+            role: j.role,
+            email: j.email || '',
+            status: j.email && j.email.includes('@') ? 'failed' : 'no_email',
+            attempts: j.email && j.email.includes('@') ? 1 : 0,
+            error: "Render free firewall blocks outbound SMTP ports 465/587. Configure Google Apps Script Relay or Brevo in Email Settings.",
+            awarded_mw: j.awarded_mw,
+            amount_nrs: j.amount_nrs,
+            sent_at: '',
+          })),
+        });
       }
     }
 

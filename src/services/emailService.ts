@@ -475,7 +475,7 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
     if (!text || !text.trim()) {
       return {
         ok: false,
-        error: `Empty response from server (HTTP ${res.status}). Server may be waking up from sleep.`,
+        error: `Server connection closed before returning data (HTTP ${res.status}). On Render Free Tier, direct outbound SMTP is blocked by Render firewall. Please configure Google Apps Script Relay (free via your Gmail) or Brevo API in Email Provider Settings for 100% reliable 1-click delivery.`,
       };
     }
     try {
@@ -558,6 +558,28 @@ export async function sendSingleNotification(
     sender: currentCfg.senderEmail,
     password: currentCfg.appPassword,
   };
+
+  // Direct client Google Apps Script dispatch if configured in settings
+  if (currentCfg.provider === 'google_script' && currentCfg.googleAppsScriptUrl && currentCfg.googleAppsScriptUrl.trim().length > 10) {
+    try {
+      const gasRes = await fetch(currentCfg.googleAppsScriptUrl.trim(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: job.to,
+          subject: job.subject,
+          html: job.html,
+          text: job.text,
+        }),
+      });
+      const parsed = await parseJsonSafely(gasRes);
+      if (parsed.ok) {
+        return { success: true, messageId: `gas-${Date.now()}`, providerUsed: 'Google Apps Script (Direct HTTPS)' };
+      }
+    } catch (err: any) {
+      console.warn('[GAS Single] Client dispatch notice, falling back to server API:', err.message);
+    }
+  }
 
   try {
     const res = await fetch('/api/send-single-email', {
@@ -696,7 +718,56 @@ export async function sendBatchNotifications(
     password: emailCfg.appPassword,
   };
 
-  // Attempt multi-provider batch dispatch via /api/send-emails
+  // 1. Direct client Google Apps Script batch dispatch if configured in settings
+  if (emailCfg.provider === 'google_script' && emailCfg.googleAppsScriptUrl && emailCfg.googleAppsScriptUrl.trim().length > 10) {
+    try {
+      const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
+      if (validJobs.length > 0) {
+        const gasRes = await fetch(emailCfg.googleAppsScriptUrl.trim(), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'send_batch',
+            jobs: validJobs.map((j) => ({
+              to: j.email,
+              subject: j.subject,
+              html: j.html,
+              text: j.text,
+              name: j.name,
+              role: j.role,
+            })),
+          }),
+        });
+
+        const parsed = await parseJsonSafely(gasRes);
+        if (parsed.ok) {
+          return jobs.map((job, idx) => {
+            const isValid = !!(job.email && job.email.includes('@'));
+            onProgress?.({
+              current: idx + 1,
+              total: jobs.length,
+              name: job.name,
+              status: isValid ? 'sent' : 'no_email',
+            });
+            return {
+              name: job.name,
+              role: job.role,
+              email: job.email,
+              status: isValid ? 'sent' : 'no_email',
+              attempts: isValid ? 1 : 0,
+              awarded_mw: job.awarded_mw,
+              amount_nrs: job.amount_nrs,
+              sent_at: isValid ? new Date().toISOString() : '',
+            };
+          });
+        }
+      }
+    } catch (gasClientErr: any) {
+      console.warn('[GAS Direct] Client dispatch notice, trying server API:', gasClientErr.message);
+    }
+  }
+
+  // 2. Attempt multi-provider batch dispatch via /api/send-emails
   try {
     const res = await fetch('/api/send-emails', {
       method: 'POST',
@@ -705,7 +776,7 @@ export async function sendBatchNotifications(
     });
 
     const parsed = await parseJsonSafely(res);
-    if (parsed.ok && parsed.data && Array.isArray(parsed.data.logs) && parsed.data.logs.length > 0) {
+    if (parsed.data && Array.isArray(parsed.data.logs) && parsed.data.logs.length > 0) {
       parsed.data.logs.forEach((log: EmailLogEntry, idx: number) => {
         onProgress?.({
           current: idx + 1,
