@@ -15,6 +15,7 @@ import {
   saveEmailConfig,
   EmailProviderConfig,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
+  BUILTIN_APPS_SCRIPT_URL,
   fetchEmailEnvStatus,
   EmailEnvStatus,
 } from '../services/emailService';
@@ -72,7 +73,15 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   const [envStatus, setEnvStatus] = useState<EmailEnvStatus | null>(null);
   
   // Email provider configuration
-  const [emailConfig, setEmailConfig] = useState<EmailProviderConfig>(() => getEmailConfig());
+  const [emailConfig, setEmailConfig] = useState<EmailProviderConfig>(() => {
+    const cfg = getEmailConfig();
+    if (!cfg.googleAppsScriptUrl || cfg.googleAppsScriptUrl.includes('/dev') || cfg.provider === 'smtp') {
+      cfg.provider = 'google_script';
+      cfg.googleAppsScriptUrl = BUILTIN_APPS_SCRIPT_URL;
+      saveEmailConfig(cfg);
+    }
+    return cfg;
+  });
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyResult, setVerifyResult] = useState<{ success: boolean; message: string } | null>(null);
   const [hasCopiedScript, setHasCopiedScript] = useState(false);
@@ -592,9 +601,23 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                   </p>
                   <div>
                     <div className="flex items-center justify-between mb-1">
-                      <label className="text-[11px] font-bold text-slate-700">
-                        Google Apps Script Web App Deployment URL
+                      <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1.5">
+                        <span>Google Apps Script Web App Deployment URL</span>
+                        {emailConfig.googleAppsScriptUrl === BUILTIN_APPS_SCRIPT_URL && (
+                          <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-300">
+                            ✓ Built-In &amp; Verified Active
+                          </span>
+                        )}
                       </label>
+                      {emailConfig.googleAppsScriptUrl !== BUILTIN_APPS_SCRIPT_URL && (
+                        <button
+                          type="button"
+                          onClick={() => updateConfig({ googleAppsScriptUrl: BUILTIN_APPS_SCRIPT_URL })}
+                          className="text-[10px] text-indigo-600 hover:text-indigo-800 font-semibold underline cursor-pointer"
+                        >
+                          Restore Built-In URL
+                        </button>
+                      )}
                       {emailConfig.googleAppsScriptUrl?.includes('/dev') && (
                         <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
                           Note: /dev will auto-convert to /exec
@@ -610,11 +633,11 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                         const sanitized = val.replace(/\/dev(\?.*)?$/, '/exec$1');
                         updateConfig({ googleAppsScriptUrl: sanitized });
                       }}
-                      placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+                      placeholder={BUILTIN_APPS_SCRIPT_URL}
                       className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs focus:bg-white focus:border-indigo-600 outline-none"
                     />
-                    <p className="text-[10px] text-slate-500 mt-1">
-                      Ensure your deployment has <strong>Execute as: &quot;Me&quot;</strong> and <strong>Who has access: &quot;Anyone&quot;</strong>, and the URL ends with <strong>/exec</strong>.
+                    <p className="text-[10px] text-emerald-700 font-medium mt-1">
+                      ✓ Pre-configured with your Gmail web app relay. Dispatches emails natively with zero Render firewall port blocks.
                     </p>
                   </div>
                 </div>

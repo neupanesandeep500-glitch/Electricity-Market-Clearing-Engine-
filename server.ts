@@ -62,13 +62,16 @@ function getEnvSmtpPort(): number {
   return process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465;
 }
 
-function getEnvGoogleAppsScriptUrl(): string | undefined {
+export const BUILTIN_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwZ456beOLcK7fcfwCi8uDurjTpaVCMLNV3ZfEERaQSgg93HTw4rtCI5PT2hMnCexWhlw/exec';
+
+function getEnvGoogleAppsScriptUrl(): string {
   return (
     process.env.GOOGLE_APPS_SCRIPT_URL ||
     process.env.EMAIL_RELAY_URL ||
     process.env.APPS_SCRIPT_URL ||
-    process.env.GAS_URL
-  )?.trim();
+    process.env.GAS_URL ||
+    BUILTIN_APPS_SCRIPT_URL
+  ).trim();
 }
 
 function getEnvBrevoKey(): string | undefined {
@@ -642,8 +645,8 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
   const { sender, password, httpApiKey, googleAppsScriptUrl, provider } = req.body || {};
 
   // Test Google Apps Script
-  if (provider === 'google_script' || googleAppsScriptUrl) {
-    const rawUrl = googleAppsScriptUrl || httpApiKey;
+  if (provider === 'google_script' || googleAppsScriptUrl || (!provider && !httpApiKey)) {
+    const rawUrl = googleAppsScriptUrl || httpApiKey || getEnvGoogleAppsScriptUrl();
     if (!rawUrl || !rawUrl.startsWith('http')) {
       return res.json({ success: false, error: 'Valid Google Apps Script Web App URL required' });
     }

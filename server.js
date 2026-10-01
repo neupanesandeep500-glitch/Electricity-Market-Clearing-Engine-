@@ -914,8 +914,9 @@ function getEnvSmtpHost() {
 function getEnvSmtpPort() {
   return process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465;
 }
+var BUILTIN_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwZ456beOLcK7fcfwCi8uDurjTpaVCMLNV3ZfEERaQSgg93HTw4rtCI5PT2hMnCexWhlw/exec";
 function getEnvGoogleAppsScriptUrl() {
-  return (process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL || process.env.APPS_SCRIPT_URL || process.env.GAS_URL)?.trim();
+  return (process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL || process.env.APPS_SCRIPT_URL || process.env.GAS_URL || BUILTIN_APPS_SCRIPT_URL).trim();
 }
 function getEnvBrevoKey() {
   return (process.env.BREVO_API_KEY || process.env.BREVO_KEY || process.env.SENDINBLUE_API_KEY || process.env.SIB_API_KEY)?.trim();
@@ -1034,31 +1035,35 @@ async function checkSmtpReachable(host, port, timeoutMs = 2e3) {
   }
   return new Promise((resolve) => {
     let settled = false;
-    const socket = net.createConnection({ host, port, timeout: timeoutMs });
-    socket.on("connect", () => {
+    let timer = null;
+    let socket = null;
+    const cleanup = (result) => {
       if (!settled) {
         settled = true;
-        socket.destroy();
-        smtpConnectivityCache = { reachable: true, lastChecked: Date.now(), host, port };
-        resolve(true);
+        if (timer) clearTimeout(timer);
+        if (socket) {
+          try {
+            socket.removeAllListeners();
+            socket.destroy();
+          } catch {
+          }
+        }
+        smtpConnectivityCache = { reachable: result, lastChecked: Date.now(), host, port };
+        resolve(result);
       }
-    });
-    socket.on("timeout", () => {
-      if (!settled) {
-        settled = true;
-        socket.destroy();
-        smtpConnectivityCache = { reachable: false, lastChecked: Date.now(), host, port };
-        resolve(false);
-      }
-    });
-    socket.on("error", () => {
-      if (!settled) {
-        settled = true;
-        socket.destroy();
-        smtpConnectivityCache = { reachable: false, lastChecked: Date.now(), host, port };
-        resolve(false);
-      }
-    });
+    };
+    timer = setTimeout(() => {
+      cleanup(false);
+    }, timeoutMs);
+    try {
+      socket = net.createConnection({ host, port });
+      socket.setTimeout(timeoutMs);
+      socket.on("connect", () => cleanup(true));
+      socket.on("timeout", () => cleanup(false));
+      socket.on("error", () => cleanup(false));
+    } catch {
+      cleanup(false);
+    }
   });
 }
 function createDirectMailTransporter(user, pass, port = 465, secure = true, host) {
@@ -1095,7 +1100,8 @@ async function sendViaGoogleAppsScript(scriptUrl, payload) {
         "Content-Type": "application/json"
       },
       body: JSON.stringify(gasPayload),
-      redirect: "follow"
+      redirect: "follow",
+      signal: AbortSignal.timeout(8e3)
     });
     const text = await res.text();
     if (text.includes("accounts.google.com") || text.includes("Sign in - Google Accounts") || text.includes("docs.google.com/favicon.ico") || text.includes("servicelogin")) {
@@ -1135,7 +1141,8 @@ async function sendViaResendHttp(apiKey, to, subject, html, text, fromEmail = "o
         subject,
         html,
         text
-      })
+      }),
+      signal: AbortSignal.timeout(8e3)
     });
     const data = await res.json();
     if (res.ok && data?.id) {
@@ -1161,7 +1168,8 @@ async function sendViaBrevoHttp(apiKey, senderEmail, to, subject, html, text) {
         subject,
         htmlContent: html,
         textContent: text
-      })
+      }),
+      signal: AbortSignal.timeout(8e3)
     });
     const data = await res.json();
     if (res.ok && data?.messageId) {
@@ -1188,7 +1196,8 @@ async function sendViaSendGridHttp(apiKey, senderEmail, to, subject, html, text)
           { type: "text/plain", value: text },
           { type: "text/html", value: html }
         ]
-      })
+      }),
+      signal: AbortSignal.timeout(8e3)
     });
     if (res.status === 202 || res.ok) {
       return { success: true, messageId: `sg-${Date.now()}` };
@@ -1304,8 +1313,8 @@ async function dispatchSingleEmail(job, smtpCredentials, httpApi) {
 }
 app.post(["/api/verify-smtp", "/api/verify-email-provider"], async (req, res) => {
   const { sender, password, httpApiKey, googleAppsScriptUrl, provider } = req.body || {};
-  if (provider === "google_script" || googleAppsScriptUrl) {
-    const rawUrl = googleAppsScriptUrl || httpApiKey;
+  if (provider === "google_script" || googleAppsScriptUrl || !provider && !httpApiKey) {
+    const rawUrl = googleAppsScriptUrl || httpApiKey || getEnvGoogleAppsScriptUrl();
     if (!rawUrl || !rawUrl.startsWith("http")) {
       return res.json({ success: false, error: "Valid Google Apps Script Web App URL required" });
     }
@@ -1428,10 +1437,14 @@ app.post("/api/send-single-email", async (req, res) => {
     if (!to || !to.includes("@")) {
       return res.status(200).json({ success: false, error: "Valid recipient email required" });
     }
-    const result = await dispatchSingleEmail(
-      { to, subject, html, text },
-      smtpCredentials,
-      httpApi
+    const result = await withTimeout(
+      dispatchSingleEmail(
+        { to, subject, html, text },
+        smtpCredentials,
+        httpApi
+      ),
+      1e4,
+      "Email dispatch timed out on server (10s limit). If deploying on Render Free Tier, direct SMTP is blocked. Please configure Google Apps Script Relay (with access set to Anyone) or Brevo API."
     );
     return res.status(200).json(result);
   } catch (err) {
@@ -1630,3 +1643,6 @@ async function startServer() {
   });
 }
 startServer();
+export {
+  BUILTIN_APPS_SCRIPT_URL
+};

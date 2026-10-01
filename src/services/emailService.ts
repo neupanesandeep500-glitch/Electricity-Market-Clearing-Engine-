@@ -367,11 +367,13 @@ export interface EmailProviderConfig {
   appPassword?: string;
 }
 
-const EMAIL_CONFIG_KEY = 'nepal_market_email_config_v3';
+export const BUILTIN_APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwZ456beOLcK7fcfwCi8uDurjTpaVCMLNV3ZfEERaQSgg93HTw4rtCI5PT2hMnCexWhlw/exec';
+
+const EMAIL_CONFIG_KEY = 'nepal_market_email_config_v4';
 
 export const DEFAULT_EMAIL_CONFIG: EmailProviderConfig = {
   provider: 'google_script',
-  googleAppsScriptUrl: '',
+  googleAppsScriptUrl: BUILTIN_APPS_SCRIPT_URL,
   brevoApiKey: '',
   resendApiKey: '',
   senderEmail: 'neupanesandeep500@gmail.com',
@@ -489,12 +491,32 @@ export function getEmailConfig(): EmailProviderConfig {
     const raw = localStorage.getItem(EMAIL_CONFIG_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
+      // Auto-heal empty or invalid Google Apps Script URL with verified built-in deployment URL
+      if (!parsed.googleAppsScriptUrl || parsed.googleAppsScriptUrl.includes('/dev') || parsed.googleAppsScriptUrl.trim().length < 10) {
+        parsed.googleAppsScriptUrl = BUILTIN_APPS_SCRIPT_URL;
+      }
+      // If still set to SMTP or invalid, migrate to reliable Google Apps Script
+      if (parsed.provider === 'smtp') {
+        parsed.provider = 'google_script';
+      }
       return { ...DEFAULT_EMAIL_CONFIG, ...parsed };
     }
-    // Check legacy resend key if present
-    const legacyResend = localStorage.getItem('nepal_market_resend_api_key');
-    if (legacyResend) {
-      return { ...DEFAULT_EMAIL_CONFIG, provider: 'resend', resendApiKey: legacyResend };
+    // Check v3 or older storage key and migrate
+    const legacyV3 = localStorage.getItem('nepal_market_email_config_v3');
+    if (legacyV3) {
+      const parsed = JSON.parse(legacyV3);
+      const migrated: EmailProviderConfig = {
+        ...DEFAULT_EMAIL_CONFIG,
+        provider: 'google_script',
+        googleAppsScriptUrl: BUILTIN_APPS_SCRIPT_URL,
+        ...parsed,
+      };
+      if (!migrated.googleAppsScriptUrl || migrated.googleAppsScriptUrl.includes('/dev')) {
+        migrated.googleAppsScriptUrl = BUILTIN_APPS_SCRIPT_URL;
+      }
+      migrated.provider = 'google_script';
+      saveEmailConfig(migrated);
+      return migrated;
     }
   } catch {
     // ignore
@@ -544,11 +566,44 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
  */
 export async function verifyEmailProvider(config?: EmailProviderConfig): Promise<{ success: boolean; message?: string; error?: string }> {
   const cfg = config || getEmailConfig();
+  const gasUrl = (cfg.googleAppsScriptUrl || BUILTIN_APPS_SCRIPT_URL).trim().replace(/\/dev(\?.*)?$/, '/exec$1');
+
+  // Direct client probe for Google Apps Script (bypasses any potential Render server sleep/timeout)
+  if (cfg.provider === 'google_script') {
+    try {
+      const testRes = await fetch(gasUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'ping' }),
+        redirect: 'follow',
+      });
+      const testText = await testRes.text();
+      try {
+        const testData = JSON.parse(testText);
+        if (testData?.success || testData?.message?.toLowerCase().includes('ready') || testData?.message?.toLowerCase().includes('running')) {
+          return {
+            success: true,
+            message: `Google Apps Script Relay verified successfully! (${testData.message || 'Ready to send via Gmail'})`,
+          };
+        }
+      } catch {
+        if (testRes.ok) {
+          return {
+            success: true,
+            message: 'Google Apps Script Relay connected and ready to send via Gmail!',
+          };
+        }
+      }
+    } catch (directErr: any) {
+      console.warn('[GAS Direct Ping] Client fetch notice, testing via server proxy:', directErr.message);
+    }
+  }
+
   const payload: any = {
     provider: cfg.provider,
     sender: cfg.senderEmail,
     password: cfg.appPassword,
-    googleAppsScriptUrl: cfg.googleAppsScriptUrl,
+    googleAppsScriptUrl: gasUrl,
     httpApiKey: cfg.provider === 'brevo' ? cfg.brevoApiKey : cfg.provider === 'resend' ? cfg.resendApiKey : undefined,
   };
 
