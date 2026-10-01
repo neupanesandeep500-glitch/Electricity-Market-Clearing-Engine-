@@ -345,7 +345,7 @@ async function sendViaGoogleAppsScript(
       },
       body: JSON.stringify(gasPayload),
       redirect: 'follow',
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(25000),
     });
 
     const text = await res.text();
@@ -572,7 +572,12 @@ async function dispatchSingleEmail(
     if (res.success) {
       return { success: true, messageId: res.messageId, providerUsed: 'Google Apps Script (HTTPS)' };
     }
-    console.warn('[Dispatch] Google Apps Script relay failed, trying next provider:', res.error);
+    // Return Google Apps Script error directly without falling back to blocked SMTP
+    return {
+      success: false,
+      error: res.error || 'Google Apps Script relay dispatch failed',
+      providerUsed: 'Google Apps Script Relay',
+    };
   }
 
   // 2. Brevo HTTP API (HTTPS Port 443 - 300 free emails/day)
@@ -653,7 +658,7 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
     const cleanUrl = rawUrl.trim().replace(/\/dev(\?.*)?$/, '/exec$1');
     try {
       // 1. Try GET (works with doGet in Google Apps Script)
-      const getRes = await fetch(cleanUrl, { redirect: 'follow' });
+      const getRes = await fetch(cleanUrl, { redirect: 'follow', signal: AbortSignal.timeout(15000) });
       const getText = await getRes.text();
 
       if (
@@ -687,6 +692,7 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'ping', to: 'test@example.com', subject: 'Ping Check' }),
         redirect: 'follow',
+        signal: AbortSignal.timeout(15000),
       });
       const pingText = await pingRes.text();
 
@@ -811,8 +817,8 @@ app.post('/api/send-single-email', async (req: Request, res: Response) => {
         smtpCredentials,
         httpApi
       ),
-      10000,
-      'Email dispatch timed out on server (10s limit). If deploying on Render Free Tier, direct SMTP is blocked. Please configure Google Apps Script Relay (with access set to Anyone) or Brevo API.'
+      35000,
+      'Email dispatch timed out on server (35s limit). Please check Google Apps Script deployment URL.'
     );
 
     return res.status(200).json(result);

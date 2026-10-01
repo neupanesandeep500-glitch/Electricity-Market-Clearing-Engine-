@@ -1101,7 +1101,7 @@ async function sendViaGoogleAppsScript(scriptUrl, payload) {
       },
       body: JSON.stringify(gasPayload),
       redirect: "follow",
-      signal: AbortSignal.timeout(8e3)
+      signal: AbortSignal.timeout(25e3)
     });
     const text = await res.text();
     if (text.includes("accounts.google.com") || text.includes("Sign in - Google Accounts") || text.includes("docs.google.com/favicon.ico") || text.includes("servicelogin")) {
@@ -1257,7 +1257,11 @@ async function dispatchSingleEmail(job, smtpCredentials, httpApi) {
     if (res.success) {
       return { success: true, messageId: res.messageId, providerUsed: "Google Apps Script (HTTPS)" };
     }
-    console.warn("[Dispatch] Google Apps Script relay failed, trying next provider:", res.error);
+    return {
+      success: false,
+      error: res.error || "Google Apps Script relay dispatch failed",
+      providerUsed: "Google Apps Script Relay"
+    };
   }
   const brevoKey = httpApi?.brevoApiKey || getEnvBrevoKey();
   if (brevoKey && brevoKey.trim().length > 10) {
@@ -1320,7 +1324,7 @@ app.post(["/api/verify-smtp", "/api/verify-email-provider"], async (req, res) =>
     }
     const cleanUrl = rawUrl.trim().replace(/\/dev(\?.*)?$/, "/exec$1");
     try {
-      const getRes = await fetch(cleanUrl, { redirect: "follow" });
+      const getRes = await fetch(cleanUrl, { redirect: "follow", signal: AbortSignal.timeout(15e3) });
       const getText = await getRes.text();
       if (getText.includes("accounts.google.com") || getText.includes("Sign in - Google Accounts") || getText.includes("docs.google.com/favicon.ico") || getText.includes("servicelogin")) {
         return res.json({
@@ -1342,7 +1346,8 @@ app.post(["/api/verify-smtp", "/api/verify-email-provider"], async (req, res) =>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "ping", to: "test@example.com", subject: "Ping Check" }),
-        redirect: "follow"
+        redirect: "follow",
+        signal: AbortSignal.timeout(15e3)
       });
       const pingText = await pingRes.text();
       if (pingText.includes("accounts.google.com") || pingText.includes("Sign in - Google Accounts") || pingText.includes("servicelogin")) {
@@ -1443,8 +1448,8 @@ app.post("/api/send-single-email", async (req, res) => {
         smtpCredentials,
         httpApi
       ),
-      1e4,
-      "Email dispatch timed out on server (10s limit). If deploying on Render Free Tier, direct SMTP is blocked. Please configure Google Apps Script Relay (with access set to Anyone) or Brevo API."
+      35e3,
+      "Email dispatch timed out on server (35s limit). Please check Google Apps Script deployment URL."
     );
     return res.status(200).json(result);
   } catch (err) {

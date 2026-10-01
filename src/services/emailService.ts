@@ -544,7 +544,7 @@ async function parseJsonSafely<T = any>(res: Response): Promise<{ ok: boolean; d
     if (!text || !text.trim()) {
       return {
         ok: false,
-        error: `Server connection closed before returning data (HTTP ${res.status}). On Render Free Tier, direct outbound SMTP is blocked by Render firewall. Please configure Google Apps Script Relay (free via your Gmail) or Brevo API in Email Provider Settings for 100% reliable 1-click delivery.`,
+        error: `Server responded with status ${res.status} but no response body. If running on Render, the instance may be spinning up. Please try again in a few seconds.`,
       };
     }
     try {
@@ -652,7 +652,7 @@ export async function sendSingleNotification(
 ): Promise<{ success: boolean; messageId?: string; error?: string; providerUsed?: string }> {
   const currentCfg = getEmailConfig();
   const mergedHttpApi = {
-    googleAppsScriptUrl: httpApi?.googleAppsScriptUrl || currentCfg.googleAppsScriptUrl,
+    googleAppsScriptUrl: httpApi?.googleAppsScriptUrl || currentCfg.googleAppsScriptUrl || BUILTIN_APPS_SCRIPT_URL,
     brevoApiKey: httpApi?.brevoApiKey || currentCfg.brevoApiKey,
     resendApiKey: httpApi?.resendApiKey || currentCfg.resendApiKey,
   };
@@ -660,31 +660,6 @@ export async function sendSingleNotification(
     sender: currentCfg.senderEmail,
     password: currentCfg.appPassword,
   };
-
-  // Direct client Google Apps Script dispatch if configured in settings
-  if (currentCfg.provider === 'google_script' && currentCfg.googleAppsScriptUrl && currentCfg.googleAppsScriptUrl.trim().length > 10) {
-    try {
-      const cleanUrl = currentCfg.googleAppsScriptUrl.trim().replace(/\/dev(\?.*)?$/, '/exec$1');
-      const gasRes = await fetch(cleanUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          to: job.to,
-          subject: job.subject,
-          html: job.html,
-          text: job.text,
-          htmlBody: job.html,
-          body: job.text || job.html,
-        }),
-      });
-      const parsed = await parseJsonSafely(gasRes);
-      if (parsed.ok) {
-        return { success: true, messageId: `gas-${Date.now()}`, providerUsed: 'Google Apps Script (Direct HTTPS)' };
-      }
-    } catch (err: any) {
-      console.warn('[GAS Single] Client dispatch notice, falling back to server API:', err.message);
-    }
-  }
 
   try {
     const res = await fetch('/api/send-single-email', {
@@ -814,7 +789,7 @@ export async function sendBatchNotifications(
   // Load configured HTTP delivery API and SMTP settings
   const emailCfg = getEmailConfig();
   const httpApi = {
-    googleAppsScriptUrl: httpApiOverride?.googleAppsScriptUrl || emailCfg.googleAppsScriptUrl,
+    googleAppsScriptUrl: httpApiOverride?.googleAppsScriptUrl || emailCfg.googleAppsScriptUrl || BUILTIN_APPS_SCRIPT_URL,
     brevoApiKey: httpApiOverride?.brevoApiKey || emailCfg.brevoApiKey,
     resendApiKey: httpApiOverride?.resendApiKey || emailCfg.resendApiKey,
   };
@@ -823,59 +798,7 @@ export async function sendBatchNotifications(
     password: emailCfg.appPassword,
   };
 
-  // 1. Direct client Google Apps Script batch dispatch if configured in settings
-  if (emailCfg.provider === 'google_script' && emailCfg.googleAppsScriptUrl && emailCfg.googleAppsScriptUrl.trim().length > 10) {
-    try {
-      const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
-      if (validJobs.length > 0) {
-        const cleanUrl = emailCfg.googleAppsScriptUrl.trim().replace(/\/dev(\?.*)?$/, '/exec$1');
-        const gasRes = await fetch(cleanUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'send_batch',
-            jobs: validJobs.map((j) => ({
-              to: j.email,
-              subject: j.subject,
-              html: j.html,
-              text: j.text,
-              htmlBody: j.html,
-              body: j.text || j.html,
-              name: j.name,
-              role: j.role,
-            })),
-          }),
-        });
-
-        const parsed = await parseJsonSafely(gasRes);
-        if (parsed.ok) {
-          return jobs.map((job, idx) => {
-            const isValid = !!(job.email && job.email.includes('@'));
-            onProgress?.({
-              current: idx + 1,
-              total: jobs.length,
-              name: job.name,
-              status: isValid ? 'sent' : 'no_email',
-            });
-            return {
-              name: job.name,
-              role: job.role,
-              email: job.email,
-              status: isValid ? 'sent' : 'no_email',
-              attempts: isValid ? 1 : 0,
-              awarded_mw: job.awarded_mw,
-              amount_nrs: job.amount_nrs,
-              sent_at: isValid ? new Date().toISOString() : '',
-            };
-          });
-        }
-      }
-    } catch (gasClientErr: any) {
-      console.warn('[GAS Direct] Client dispatch notice, trying server API:', gasClientErr.message);
-    }
-  }
-
-  // 2. Attempt multi-provider batch dispatch via /api/send-emails
+  // Attempt multi-provider batch dispatch via /api/send-emails
   try {
     const res = await fetch('/api/send-emails', {
       method: 'POST',
