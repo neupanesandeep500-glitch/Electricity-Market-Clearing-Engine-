@@ -15,8 +15,8 @@ import {
   saveEmailConfig,
   EmailProviderConfig,
   GOOGLE_APPS_SCRIPT_TEMPLATE,
-  generateMailtoLink,
-  generateGmailWebLink,
+  fetchEmailEnvStatus,
+  EmailEnvStatus,
 } from '../services/emailService';
 import {
   Mail,
@@ -45,7 +45,7 @@ interface EmailNotificationsTabProps {
   sellers: RawBidOfferRecord[];
   results: Record<number, SlotClearingResult>;
   nSlots: number;
-  sessionLabel: string;
+  sessionLabel?: string;
   hasComputed?: boolean;
   onPreviewEmail: (participant: ParticipantSummaryItem) => void;
   onRunCompute?: () => void;
@@ -69,6 +69,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<'success' | 'error' | 'info'>('info');
   const [showConfig, setShowConfig] = useState(false);
+  const [envStatus, setEnvStatus] = useState<EmailEnvStatus | null>(null);
   
   // Email provider configuration
   const [emailConfig, setEmailConfig] = useState<EmailProviderConfig>(() => getEmailConfig());
@@ -82,6 +83,13 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
   // Per-row sending state
   const [sendingRowName, setSendingRowName] = useState<string | null>(null);
+
+  // Poll server environment email status on mount
+  useEffect(() => {
+    fetchEmailEnvStatus().then((st) => {
+      if (st) setEnvStatus(st);
+    });
+  }, []);
 
   const isCalculated = hasComputed && participantSummaries.length > 0;
   const clearedCount = isCalculated ? Object.values(results).filter((r) => r && r.status === 'Cleared').length : 0;
@@ -108,6 +116,9 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
         setVerifyResult({
           success: true,
           message: res.message || 'Provider connection verified successfully!',
+        });
+        fetchEmailEnvStatus().then((st) => {
+          if (st) setEnvStatus(st);
         });
       } else {
         setVerifyResult({
@@ -171,7 +182,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
       p.name,
       p.role,
       slotData,
-      sessionLabel,
+      sessionLabel || 'Current Market Dispatch Session',
       clearedCount,
       nSlots
     );
@@ -186,7 +197,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
       if (res.success) {
         setStatusType('success');
-        setStatusMessage(`Notification successfully sent to ${p.name} (${p.email})!`);
+        setStatusMessage(`Notification successfully delivered to ${p.name} (${p.email})!`);
         setLogs((prev) => [
           {
             name: p.name,
@@ -203,15 +214,13 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
       } else {
         setStatusType('error');
         setStatusMessage(
-          `Automatic delivery to ${p.name} failed: ${res.error || 'Unknown email provider error'}. ` +
-          `Use "Web Gmail" to send the notification manually.`
+          `Delivery to ${p.name} failed: ${res.error || 'Server error delivering notification'}.`
         );
       }
     } catch (err: any) {
       setStatusType('error');
       setStatusMessage(
-        `Automatic delivery to ${p.name} failed: ${err?.message || String(err)}. ` +
-        `Use "Web Gmail" to send the notification manually.`
+        `Delivery to ${p.name} failed: ${err?.message || String(err)}.`
       );
     } finally {
       setSendingRowName(null);
@@ -242,7 +251,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
         p.name,
         p.role,
         slotData,
-        sessionLabel,
+        sessionLabel || 'Current Market Dispatch Session',
         clearedCount,
         nSlots
       );
@@ -339,6 +348,50 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
               <span>Compute Market First</span>
             </button>
           )}
+        </div>
+      )}
+
+      {/* Render Server Environment Status Banner */}
+      {envStatus && (
+        <div className={`p-4 rounded-2xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs ${
+          envStatus.activeProvider !== 'None'
+            ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+            : 'bg-amber-50/90 border-amber-200 text-amber-950'
+        }`}>
+          <div className="flex items-start sm:items-center gap-2.5">
+            <span className={`w-3 h-3 rounded-full mt-0.5 sm:mt-0 shrink-0 ${
+              envStatus.activeProvider !== 'None' ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
+            }`} />
+            <div>
+              <div className="font-bold flex items-center gap-2 flex-wrap">
+                <span>Render Deployment Status: {envStatus.activeProvider}</span>
+                {envStatus.smtpSender && (
+                  <span className="font-mono text-[11px] font-normal px-2 py-0.5 rounded bg-white/80 border border-emerald-300 text-emerald-900">
+                    {envStatus.smtpSender}
+                  </span>
+                )}
+                {envStatus.activeProvider !== 'None' && (
+                  <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-emerald-600 text-white tracking-wider">
+                    Online &amp; Ready
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                {envStatus.activeProvider !== 'None'
+                  ? 'Server environment credentials detected and active. 1-click batch dispatch will deliver emails directly to participants.'
+                  : 'No credentials detected in Render environment. You can enter settings below or add EMAIL_SENDER and EMAIL_PASSWORD in Render dashboard.'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowConfig(!showConfig)}
+              className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-white hover:bg-slate-50 transition-colors shadow-2xs text-slate-700 cursor-pointer"
+            >
+              {showConfig ? 'Hide Settings' : 'Configure Provider'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -439,11 +492,16 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
 
             <button
               onClick={() => handleSendBatch(false)}
-              disabled={isSending || !hasComputed}
-              className="flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition-all shadow-sm active:scale-95 disabled:opacity-50 cursor-pointer"
+              disabled={isSending || !hasComputed || withEmailCount === 0}
+              className="flex items-center gap-2 px-5 py-2.5 text-xs font-bold rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white transition-all shadow-md active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="1-Click automatic delivery to all participants informing their market clearing results"
             >
-              {isSending ? <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" /> : <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300" />}
-              <span>{isSending ? 'Dispatching to All...' : 'Dispatch All Notifications'}</span>
+              {isSending ? (
+                <Loader2 className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <Send className="w-4 h-4 text-white" />
+              )}
+              <span>{isSending ? 'Sending Notifications...' : `Send All Notifications (${withEmailCount})`}</span>
             </button>
           </div>
         </div>
@@ -747,21 +805,6 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                     results,
                     nSlots
                   );
-                  const emailObj = buildParticipantEmail(
-                    p.name,
-                    p.role,
-                    slotData,
-                    sessionLabel,
-                    clearedCount,
-                    nSlots
-                  );
-                  const mailtoLink = generateMailtoLink(p.email || '', emailObj.subject, emailObj.text);
-                  const gmailWebLink = generateGmailWebLink(
-                    p.email || '',
-                    emailObj.subject,
-                    emailObj.text
-                  );
-
                   return (
                     <tr key={idx} className="hover:bg-slate-50 transition-colors">
                       <td className="p-3 font-semibold text-slate-800">{p.name}</td>
@@ -845,7 +888,7 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                             onClick={() => handleSendSingle(p)}
                             disabled={sendingRowName === p.name || !hasComputed}
                             className="inline-flex items-center gap-1.5 px-3 py-1 text-[11px] font-bold text-emerald-800 bg-emerald-100/80 hover:bg-emerald-200 border border-emerald-300 rounded-lg transition-colors cursor-pointer disabled:opacity-40 shadow-2xs"
-                            title="Send confirmation email directly via configured provider"
+                            title="Send confirmation email directly to this participant"
                           >
                             {sendingRowName === p.name ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -854,30 +897,6 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                             )}
                             <span>Send Notification</span>
                           </button>
-
-                          {/* Open Gmail Web */}
-                          <a
-                            href={gmailWebLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-white bg-red-600 hover:bg-red-700 border border-red-700 rounded-lg transition-colors shadow-2xs"
-                            title="Open Gmail in a new tab with recipient, subject and message pre-filled"
-                          >
-                            <ExternalLink className="w-3 h-3" />
-                            <span>Web Gmail</span>
-                          </a>
-
-                          {/* Open Mail App */}
-                          <a
-                            href={mailtoLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-colors"
-                            title="Open in your default mail app (Outlook, Apple Mail, etc.)"
-                          >
-                            <ExternalLink className="w-3 h-3" />
-                            <span>Mail Client</span>
-                          </a>
                         </div>
                       </td>
                     </tr>

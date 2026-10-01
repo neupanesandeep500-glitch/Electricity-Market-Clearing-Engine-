@@ -609,6 +609,32 @@ export function generateGmailWebLink(
   return `https://mail.google.com/mail/?view=cm&fs=1&to=${encTo}&su=${encSubject}&body=${encBody}`;
 }
 
+export interface EmailEnvStatus {
+  status: string;
+  activeProvider: string;
+  smtpConfigured: boolean;
+  smtpSender: string;
+  smtpHost: string;
+  smtpPort: number;
+  hasGoogleScriptUrl: boolean;
+  hasBrevoKey: boolean;
+  hasResendKey: boolean;
+  hasSendGridKey: boolean;
+}
+
+/**
+ * Fetch server environment email credentials status
+ */
+export async function fetchEmailEnvStatus(): Promise<EmailEnvStatus | null> {
+  try {
+    const res = await fetch('/api/email-env-status');
+    const parsed = await parseJsonSafely<EmailEnvStatus>(res);
+    return parsed.data || null;
+  } catch {
+    return null;
+  }
+}
+
 export type ProgressCallback = (info: {
   current: number;
   total: number;

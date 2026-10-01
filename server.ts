@@ -16,10 +16,76 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Email credentials (tested and verified with smtp.gmail.com)
-const EMAIL_SENDER = process.env.EMAIL_SENDER || 'neupanesandeep500@gmail.com';
-const EMAIL_PASSWORD = process.env.EMAIL_PASSWORD || 'kroetysmnrlvzomr';
-const DEFAULT_REPLY_TO = process.env.EMAIL_REPLY_TO || '080mspse021.sandeep@pcampus.edu.np';
+// Email credentials & environment resolvers (supports all common environment variable naming on Render)
+function getEnvEmailSender(): string {
+  return (
+    process.env.EMAIL_SENDER ||
+    process.env.EMAIL_USER ||
+    process.env.SMTP_USER ||
+    process.env.SMTP_EMAIL ||
+    process.env.GMAIL_USER ||
+    process.env.GMAIL_ADDRESS ||
+    process.env.SENDER_EMAIL ||
+    process.env.USER_EMAIL ||
+    process.env.MAIL_USERNAME ||
+    'neupanesandeep500@gmail.com'
+  ).trim();
+}
+
+function getEnvEmailPassword(): string {
+  return (
+    process.env.EMAIL_PASSWORD ||
+    process.env.EMAIL_PASS ||
+    process.env.SMTP_PASS ||
+    process.env.SMTP_PASSWORD ||
+    process.env.GMAIL_APP_PASSWORD ||
+    process.env.APP_PASSWORD ||
+    process.env.MAIL_PASSWORD ||
+    'kroetysmnrlvzomr'
+  ).replace(/\s+/g, '');
+}
+
+function getEnvReplyTo(): string {
+  return (
+    process.env.EMAIL_REPLY_TO ||
+    process.env.REPLY_TO ||
+    '080mspse021.sandeep@pcampus.edu.np'
+  ).trim();
+}
+
+function getEnvSmtpHost(): string {
+  return (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+}
+
+function getEnvSmtpPort(): number {
+  return process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : 465;
+}
+
+function getEnvGoogleAppsScriptUrl(): string | undefined {
+  return (
+    process.env.GOOGLE_APPS_SCRIPT_URL ||
+    process.env.EMAIL_RELAY_URL ||
+    process.env.APPS_SCRIPT_URL ||
+    process.env.GAS_URL
+  )?.trim();
+}
+
+function getEnvBrevoKey(): string | undefined {
+  return (
+    process.env.BREVO_API_KEY ||
+    process.env.BREVO_KEY ||
+    process.env.SENDINBLUE_API_KEY ||
+    process.env.SIB_API_KEY
+  )?.trim();
+}
+
+function getEnvResendKey(): string | undefined {
+  return (process.env.RESEND_API_KEY || process.env.RESEND_KEY)?.trim();
+}
+
+function getEnvSendGridKey(): string | undefined {
+  return (process.env.SENDGRID_API_KEY || process.env.SG_API_KEY)?.trim();
+}
 
 /**
  * Health & Ping endpoints for uptime monitors and keep-alive (prevents Render free tier spin-down)
@@ -33,10 +99,54 @@ app.get(['/api/health', '/api/ping'], (_req: Request, res: Response) => {
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
     service: 'Nepal Electricity Market Clearing Engine',
-    hasBrevoKey: !!process.env.BREVO_API_KEY,
-    hasResendKey: !!process.env.RESEND_API_KEY,
-    hasGoogleScriptUrl: !!(process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL),
-    smtpConfigured: !!(EMAIL_SENDER && EMAIL_PASSWORD),
+    hasBrevoKey: !!getEnvBrevoKey(),
+    hasResendKey: !!getEnvResendKey(),
+    hasSendGridKey: !!getEnvSendGridKey(),
+    hasGoogleScriptUrl: !!getEnvGoogleAppsScriptUrl(),
+    smtpConfigured: !!(getEnvEmailSender() && getEnvEmailPassword()),
+  });
+});
+
+/**
+ * Email Environment Status inspection endpoint
+ * Allows the UI to display which credentials are currently set in Render environment
+ */
+app.get('/api/email-env-status', (_req: Request, res: Response) => {
+  const sender = getEnvEmailSender();
+  const hasPass = !!getEnvEmailPassword();
+  const gasUrl = getEnvGoogleAppsScriptUrl();
+  const brevoKey = getEnvBrevoKey();
+  const resendKey = getEnvResendKey();
+  const sgKey = getEnvSendGridKey();
+
+  const maskedSender = sender
+    ? sender.replace(/^(..)(.*)(@.*)$/, (_m, p1, _p2, p3) => `${p1}***${p3}`)
+    : '';
+
+  let activeProvider = 'None';
+  if (gasUrl) {
+    activeProvider = 'Google Apps Script Relay (HTTPS)';
+  } else if (brevoKey) {
+    activeProvider = 'Brevo HTTP API (HTTPS)';
+  } else if (resendKey) {
+    activeProvider = 'Resend HTTP API (HTTPS)';
+  } else if (sgKey) {
+    activeProvider = 'SendGrid HTTP API (HTTPS)';
+  } else if (sender && hasPass) {
+    activeProvider = `Gmail/SMTP (${getEnvSmtpHost()})`;
+  }
+
+  res.json({
+    status: 'ok',
+    activeProvider,
+    smtpConfigured: !!(sender && hasPass),
+    smtpSender: maskedSender,
+    smtpHost: getEnvSmtpHost(),
+    smtpPort: getEnvSmtpPort(),
+    hasGoogleScriptUrl: !!gasUrl,
+    hasBrevoKey: !!brevoKey,
+    hasResendKey: !!resendKey,
+    hasSendGridKey: !!sgKey,
   });
 });
 
@@ -111,16 +221,23 @@ function withTimeout<T>(promise: Promise<T>, ms: number, errMsg: string): Promis
 /**
  * Creates clean, safe non-pooled mail transporter with explicit error listener
  */
-function createDirectMailTransporter(user: string, pass: string, port = 465, secure = true): Transporter {
+function createDirectMailTransporter(
+  user: string,
+  pass: string,
+  port = 465,
+  secure = true,
+  host?: string
+): Transporter {
   const cleanPass = pass.replace(/\s+/g, '');
+  const targetHost = host || getEnvSmtpHost();
   const tp = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
+    host: targetHost,
     port,
     secure,
     auth: { user, pass: cleanPass },
-    connectionTimeout: 2000,
-    greetingTimeout: 2000,
-    socketTimeout: 3000,
+    connectionTimeout: 4000,
+    greetingTimeout: 4000,
+    socketTimeout: 5000,
     tls: {
       rejectUnauthorized: false,
     },
@@ -254,45 +371,81 @@ async function sendViaBrevoHttp(
 }
 
 /**
+ * Send email via SendGrid HTTP API (Port 443 HTTPS - 100% works on Render free & paid)
+ */
+async function sendViaSendGridHttp(
+  apiKey: string,
+  senderEmail: string,
+  to: string,
+  subject: string,
+  html: string,
+  text: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> {
+  try {
+    const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey.trim()}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: senderEmail, name: 'Nepal Electricity Market Clearing Engine' },
+        subject,
+        content: [
+          { type: 'text/plain', value: text },
+          { type: 'text/html', value: html },
+        ],
+      }),
+    });
+
+    if (res.status === 202 || res.ok) {
+      return { success: true, messageId: `sg-${Date.now()}` };
+    }
+    const errText = await res.text();
+    return { success: false, error: `SendGrid error (HTTP ${res.status}): ${errText.slice(0, 150)}` };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'SendGrid HTTP API failed' };
+  }
+}
+
+/**
  * Robust email sender with primary Port 465 (SSL) and fallback to Port 587 (STARTTLS)
- * Strictly bounded by 2.0s per attempt to guarantee fast response on cloud hosts
  */
 async function sendMailWithFallback(
   user: string,
   pass: string,
-  mailOptions: SendMailOptions
+  mailOptions: SendMailOptions,
+  customHost?: string,
+  customPort?: number
 ): Promise<SentMessageInfo> {
-  // If running on Render free tier, direct SMTP is blocked at network level
-  if (process.env.RENDER && !process.env.RENDER_SMTP_UNLOCKED) {
-    throw new Error(
-      'Render Free Plan blocks outbound SMTP (ports 465/587). Please configure Google Apps Script Relay (free) or Brevo API in Email Settings.'
-    );
-  }
-
   const cleanPass = pass.replace(/\s+/g, '');
+  const host = customHost || getEnvSmtpHost();
+
+  const primaryPort = customPort || (host === 'smtp.gmail.com' ? 465 : 465);
 
   try {
-    // Primary: Port 465 (Direct SSL / TLS) with strict 2.0s timeout
-    const tp465 = createDirectMailTransporter(user, cleanPass, 465, true);
+    // Primary attempt (typically Port 465 SSL)
+    const tpPrimary = createDirectMailTransporter(user, cleanPass, primaryPort, primaryPort === 465, host);
     return await withTimeout(
-      tp465.sendMail(mailOptions),
-      2000,
-      'Port 465 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
+      tpPrimary.sendMail(mailOptions),
+      4500,
+      `Port ${primaryPort} connection timed out`
     );
-  } catch (err465: any) {
-    console.warn(`[SMTP] Port 465 notice (${err465.message}), attempting fallback to Port 587...`);
+  } catch (errPrimary: any) {
+    console.warn(`[SMTP Port ${primaryPort}] notice (${errPrimary.message}), attempting fallback to Port 587...`);
     try {
-      // Fallback: Port 587 (STARTTLS) with strict 2.0s timeout
-      const tp587 = createDirectMailTransporter(user, cleanPass, 587, false);
+      // Fallback: Port 587 (STARTTLS)
+      const tp587 = createDirectMailTransporter(user, cleanPass, 587, false, host);
       return await withTimeout(
         tp587.sendMail(mailOptions),
-        2000,
-        'Port 587 connection timed out (Render blocks outbound SMTP ports 25, 465, 587 on free tier)'
+        4500,
+        'Port 587 connection timed out'
       );
     } catch (err587: any) {
-      console.error('[SMTP] Both Port 465 and Port 587 failed:', err587.message);
+      console.error('[SMTP] Both Port 465 and Port 587 attempts failed:', err587.message);
       throw new Error(
-        'Render Free Tier blocks outbound SMTP ports (465/587). Please configure Google Apps Script Relay or Brevo/Resend HTTP API in Email Settings.'
+        `SMTP delivery failed (${errPrimary.message || err587.message}). Note: On Render free tier services, raw outbound SMTP ports (465/587) are blocked by Render. You can add BREVO_API_KEY, RESEND_API_KEY, or GOOGLE_APPS_SCRIPT_URL in your Render environment variables for 100% guaranteed delivery.`
       );
     }
   }
@@ -300,15 +453,15 @@ async function sendMailWithFallback(
 
 /**
  * Unified Dispatcher: Dispatches single email through the best available provider
- * Priority: Google Apps Script Web App -> Brevo HTTP -> Resend HTTP -> Direct SMTP
+ * Priority: Google Apps Script Web App -> Brevo HTTP -> Resend HTTP -> SendGrid HTTP -> Direct SMTP
  */
 async function dispatchSingleEmail(
   job: { to: string; subject: string; html: string; text: string; name?: string; role?: string },
-  smtpCredentials?: { sender?: string; password?: string },
+  smtpCredentials?: { sender?: string; password?: string; host?: string; port?: number },
   httpApi?: { googleAppsScriptUrl?: string; brevoApiKey?: string; resendApiKey?: string }
 ): Promise<{ success: boolean; messageId?: string; error?: string; providerUsed: string }> {
-  // 1. Google Apps Script Web App (HTTPS Port 443 - zero block, uses own Gmail)
-  const scriptUrl = httpApi?.googleAppsScriptUrl || process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL;
+  // 1. Google Apps Script Web App (HTTPS Port 443 - zero blocked ports, uses own Gmail)
+  const scriptUrl = httpApi?.googleAppsScriptUrl || getEnvGoogleAppsScriptUrl();
   if (scriptUrl && scriptUrl.trim().length > 10) {
     const res = await sendViaGoogleAppsScript(scriptUrl, {
       to: job.to,
@@ -323,9 +476,9 @@ async function dispatchSingleEmail(
   }
 
   // 2. Brevo HTTP API (HTTPS Port 443 - 300 free emails/day)
-  const brevoKey = httpApi?.brevoApiKey || process.env.BREVO_API_KEY;
+  const brevoKey = httpApi?.brevoApiKey || getEnvBrevoKey();
   if (brevoKey && brevoKey.trim().length > 10) {
-    const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
+    const senderEmail = smtpCredentials?.sender || getEnvEmailSender();
     const res = await sendViaBrevoHttp(brevoKey, senderEmail, job.to, job.subject, job.html, job.text);
     if (res.success) {
       return { success: true, messageId: res.messageId, providerUsed: 'Brevo HTTP API (HTTPS)' };
@@ -334,7 +487,7 @@ async function dispatchSingleEmail(
   }
 
   // 3. Resend HTTP API (HTTPS Port 443 - 100 free emails/day)
-  const resendKey = httpApi?.resendApiKey || process.env.RESEND_API_KEY;
+  const resendKey = httpApi?.resendApiKey || getEnvResendKey();
   if (resendKey && resendKey.trim().length > 10) {
     const res = await sendViaResendHttp(resendKey, job.to, job.subject, job.html, job.text);
     if (res.success) {
@@ -343,25 +496,44 @@ async function dispatchSingleEmail(
     console.warn('[Dispatch] Resend API failed, trying next provider:', res.error);
   }
 
-  // 4. Direct Gmail SMTP (Ports 465/587 - Works on Render Paid / VPS / Local)
-  const senderEmail = smtpCredentials?.sender || EMAIL_SENDER;
-  const senderPass = smtpCredentials?.password ? smtpCredentials.password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
+  // 4. SendGrid HTTP API (HTTPS Port 443)
+  const sgKey = getEnvSendGridKey();
+  if (sgKey && sgKey.trim().length > 10) {
+    const senderEmail = smtpCredentials?.sender || getEnvEmailSender();
+    const res = await sendViaSendGridHttp(sgKey, senderEmail, job.to, job.subject, job.html, job.text);
+    if (res.success) {
+      return { success: true, messageId: res.messageId, providerUsed: 'SendGrid HTTP API (HTTPS)' };
+    }
+    console.warn('[Dispatch] SendGrid API failed, trying next provider:', res.error);
+  }
+
+  // 5. Direct SMTP (Ports 465/587 - Works on Render Paid / VPS / Local / unblocked cloud)
+  const senderEmail = smtpCredentials?.sender || getEnvEmailSender();
+  const senderPass = smtpCredentials?.password
+    ? smtpCredentials.password.replace(/\s+/g, '')
+    : getEnvEmailPassword();
 
   try {
-    const info = await sendMailWithFallback(senderEmail, senderPass, {
-      from: `"Nepal Electricity Market Clearing Engine" <${senderEmail}>`,
-      replyTo: DEFAULT_REPLY_TO,
-      to: job.to,
-      subject: job.subject,
-      text: job.text,
-      html: job.html,
-    });
-    return { success: true, messageId: info.messageId, providerUsed: 'Gmail SMTP (Port 465/587)' };
+    const info = await sendMailWithFallback(
+      senderEmail,
+      senderPass,
+      {
+        from: `"Nepal Electricity Market Clearing Engine" <${senderEmail}>`,
+        replyTo: getEnvReplyTo(),
+        to: job.to,
+        subject: job.subject,
+        text: job.text,
+        html: job.html,
+      },
+      smtpCredentials?.host,
+      smtpCredentials?.port
+    );
+    return { success: true, messageId: info.messageId, providerUsed: `SMTP (${getEnvSmtpHost()})` };
   } catch (err: any) {
     return {
       success: false,
-      error: err.message || 'SMTP delivery failed. Render Free Plan blocks raw SMTP. Please configure Google Apps Script or Brevo in Email Settings.',
-      providerUsed: 'None (SMTP Blocked)',
+      error: err.message || 'SMTP delivery failed.',
+      providerUsed: 'None (Delivery Failed)',
     };
   }
 }
@@ -433,30 +605,23 @@ app.post(['/api/verify-smtp', '/api/verify-email-provider'], async (req: Request
   }
 
   // Direct SMTP check
-  const user = sender || EMAIL_SENDER;
-  const pass = password ? password.replace(/\s+/g, '') : EMAIL_PASSWORD.replace(/\s+/g, '');
-
-  if (process.env.RENDER && !process.env.RENDER_SMTP_UNLOCKED) {
-    return res.status(200).json({
-      success: false,
-      error: 'Render Free Plan blocks raw outbound SMTP ports (465/587). Please select and configure Google Apps Script Relay (free) or Brevo API.',
-    });
-  }
+  const user = sender || getEnvEmailSender();
+  const pass = password ? password.replace(/\s+/g, '') : getEnvEmailPassword();
 
   try {
     let tp = createDirectMailTransporter(user, pass, 465, true);
     try {
-      await withTimeout(tp.verify(), 2000, 'Port 465 verify timed out');
+      await withTimeout(tp.verify(), 4000, 'Port 465 verify timed out');
     } catch {
       tp = createDirectMailTransporter(user, pass, 587, false);
-      await withTimeout(tp.verify(), 2000, 'Port 587 verify timed out');
+      await withTimeout(tp.verify(), 4000, 'Port 587 verify timed out');
     }
-    return res.status(200).json({ success: true, message: `SMTP connection to Gmail verified successfully for ${user}!` });
+    return res.status(200).json({ success: true, message: `SMTP connection verified successfully for ${user}!` });
   } catch (err: any) {
     console.error('SMTP verify error:', err.message);
     return res.status(200).json({
       success: false,
-      error: `Notice: ${err.message || String(err)}. Note: Render Free Plan blocks direct SMTP ports (465/587). Please use Google Apps Script Relay or Brevo HTTP API for guaranteed delivery.`,
+      error: `Notice: ${err.message || String(err)}. Note: On Render free tier services, raw outbound SMTP ports (465/587) are blocked by Render. You can add BREVO_API_KEY, RESEND_API_KEY, or GOOGLE_APPS_SCRIPT_URL in your Render environment variables for 100% guaranteed delivery.`,
     });
   }
 });
@@ -517,7 +682,7 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
     }
 
     // Check if Google Apps Script URL supports bulk batch dispatch in a single call
-    const scriptUrl = httpApi?.googleAppsScriptUrl || process.env.GOOGLE_APPS_SCRIPT_URL || process.env.EMAIL_RELAY_URL;
+    const scriptUrl = httpApi?.googleAppsScriptUrl || getEnvGoogleAppsScriptUrl();
     if (scriptUrl && scriptUrl.trim().length > 10) {
       try {
         const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
@@ -568,8 +733,8 @@ app.post('/api/send-emails', async (req: Request, res: Response) => {
       }
     }
 
-    // Parallel chunked dispatch using unified dispatcher
-    const CONCURRENCY = 4;
+    // Controlled concurrent dispatch using unified dispatcher
+    const CONCURRENCY = 2;
     for (let i = 0; i < jobs.length; i += CONCURRENCY) {
       const chunk = jobs.slice(i, i + CONCURRENCY);
       await Promise.all(
