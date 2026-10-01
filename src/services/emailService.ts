@@ -384,57 +384,104 @@ export const DEFAULT_EMAIL_CONFIG: EmailProviderConfig = {
 export const GOOGLE_APPS_SCRIPT_TEMPLATE = `// -------------------------------------------------------------
 // Nepal Electricity Market Clearing Engine - Email Relay Script
 // -------------------------------------------------------------
-// 1. Go to https://script.google.com and click "New project"
-// 2. Paste this entire code into Code.gs
-// 3. Click "Deploy" -> "New deployment"
+// Deployment Instructions:
+// 1. Open your Apps Script editor (https://script.google.com)
+// 2. Replace Code.gs with this code and save (Ctrl+S / Cmd+S)
+// 3. Click "Deploy" -> "New deployment" (or "Manage deployments" -> Edit)
 // 4. Select type: "Web app"
-// 5. Execute as: "Me" | Who has access: "Anyone"
-// 6. Click "Deploy", authorize permissions, and copy the Web App URL!
+// 5. Configuration:
+//    - Description: "Nepal Market Relay"
+//    - Execute as: "Me (<your-email>)"
+//    - Who has access: "Anyone"  <-- CRITICAL! Must be "Anyone"
+// 6. Click "Deploy", copy the Web App URL ending in "/exec"
 // -------------------------------------------------------------
 
 function doPost(e) {
   try {
-    var data = JSON.parse(e.postData.contents);
-    
-    // Batch dispatch
+    if (!e || !e.postData || !e.postData.contents) {
+      return jsonResponse({
+        success: false,
+        error: "No POST data received"
+      });
+    }
+
+    const data = JSON.parse(e.postData.contents);
+
+    // 1. Connection Ping / Health Check
+    if (data.action === "ping") {
+      return jsonResponse({
+        success: true,
+        message: "Google Apps Script Email Relay is connected and ready!"
+      });
+    }
+
+    // 2. 1-Click Fast Batch Dispatch
     if (data.action === "send_batch" && Array.isArray(data.jobs)) {
-      var sent = 0;
-      for (var i = 0; i < data.jobs.length; i++) {
-        var job = data.jobs[i];
+      let sentCount = 0;
+      for (let i = 0; i < data.jobs.length; i++) {
+        const job = data.jobs[i];
         if (job.to && job.to.indexOf("@") !== -1) {
-          MailApp.sendEmail({
-            to: job.to,
-            subject: job.subject,
-            htmlBody: job.html,
-            body: job.text || "",
+          const jobSub = job.subject || "Nepal Electricity Market Results";
+          const jobBody = job.body || job.text || "";
+          const jobHtml = job.htmlBody || job.html || jobBody;
+          GmailApp.sendEmail(job.to, jobSub, jobBody, {
+            htmlBody: jobHtml,
             name: "Nepal Electricity Market Clearing Engine"
           });
-          sent++;
+          sentCount++;
         }
       }
-      return ContentService.createTextOutput(JSON.stringify({ success: true, count: sent }))
-        .setMimeType(ContentService.MimeType.JSON);
-    }
-    
-    // Single email dispatch
-    if (data.to) {
-      MailApp.sendEmail({
-        to: data.to,
-        subject: data.subject,
-        htmlBody: data.html,
-        body: data.text || "",
-        name: "Nepal Electricity Market Clearing Engine"
+      return jsonResponse({
+        success: true,
+        message: "Batch dispatched successfully",
+        count: sentCount
       });
-      return ContentService.createTextOutput(JSON.stringify({ success: true, messageId: "gas-" + new Date().getTime() }))
-        .setMimeType(ContentService.MimeType.JSON);
     }
-    
-    return ContentService.createTextOutput(JSON.stringify({ success: true, message: "Relay ping OK" }))
-      .setMimeType(ContentService.MimeType.JSON);
-  } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+
+    // 3. Single Email Dispatch
+    const to = data.to;
+    const subject = data.subject || "Nepal Electricity Market Notification";
+    const body = data.body || data.text || "";
+    const htmlBody = data.htmlBody || data.html || body;
+
+    if (!to) {
+      return jsonResponse({
+        success: false,
+        error: "Recipient email address is required"
+      });
+    }
+
+    GmailApp.sendEmail(to, subject, body, {
+      htmlBody: htmlBody,
+      name: "Nepal Electricity Market Clearing Engine"
+    });
+
+    return jsonResponse({
+      success: true,
+      message: "Email sent successfully",
+      recipient: to,
+      messageId: "gas-" + new Date().getTime()
+    });
+
+  } catch (error) {
+    return jsonResponse({
+      success: false,
+      error: error.toString()
+    });
   }
+}
+
+function doGet() {
+  return jsonResponse({
+    success: true,
+    message: "Google Apps Script Email Relay is running and ready!"
+  });
+}
+
+function jsonResponse(data) {
+  return ContentService
+    .createTextOutput(JSON.stringify(data))
+    .setMimeType(ContentService.MimeType.JSON);
 }`;
 
 export function getEmailConfig(): EmailProviderConfig {
@@ -562,7 +609,8 @@ export async function sendSingleNotification(
   // Direct client Google Apps Script dispatch if configured in settings
   if (currentCfg.provider === 'google_script' && currentCfg.googleAppsScriptUrl && currentCfg.googleAppsScriptUrl.trim().length > 10) {
     try {
-      const gasRes = await fetch(currentCfg.googleAppsScriptUrl.trim(), {
+      const cleanUrl = currentCfg.googleAppsScriptUrl.trim().replace(/\/dev(\?.*)?$/, '/exec$1');
+      const gasRes = await fetch(cleanUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -570,6 +618,8 @@ export async function sendSingleNotification(
           subject: job.subject,
           html: job.html,
           text: job.text,
+          htmlBody: job.html,
+          body: job.text || job.html,
         }),
       });
       const parsed = await parseJsonSafely(gasRes);
@@ -723,7 +773,8 @@ export async function sendBatchNotifications(
     try {
       const validJobs = jobs.filter((j) => j.email && j.email.includes('@'));
       if (validJobs.length > 0) {
-        const gasRes = await fetch(emailCfg.googleAppsScriptUrl.trim(), {
+        const cleanUrl = emailCfg.googleAppsScriptUrl.trim().replace(/\/dev(\?.*)?$/, '/exec$1');
+        const gasRes = await fetch(cleanUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -733,6 +784,8 @@ export async function sendBatchNotifications(
               subject: j.subject,
               html: j.html,
               text: j.text,
+              htmlBody: j.html,
+              body: j.text || j.html,
               name: j.name,
               role: j.role,
             })),

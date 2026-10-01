@@ -591,16 +591,31 @@ export const EmailNotificationsTab: React.FC<EmailNotificationsTabProps> = ({
                     Sends directly from your Gmail account (<strong>{emailConfig.senderEmail}</strong>) via Google's cloud over HTTPS port 443 with zero port blocking, zero spam filters, and zero monthly fees!
                   </p>
                   <div>
-                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
-                      Google Apps Script Web App Deployment URL
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-bold text-slate-700">
+                        Google Apps Script Web App Deployment URL
+                      </label>
+                      {emailConfig.googleAppsScriptUrl?.includes('/dev') && (
+                        <span className="text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200">
+                          Note: /dev will auto-convert to /exec
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="url"
                       value={emailConfig.googleAppsScriptUrl || ''}
-                      onChange={(e) => updateConfig({ googleAppsScriptUrl: e.target.value })}
-                      placeholder="https://script.google.com/macros/s/.../exec"
+                      onChange={(e) => {
+                        const val = e.target.value.trim();
+                        // Auto-correct /dev to /exec if pasted
+                        const sanitized = val.replace(/\/dev(\?.*)?$/, '/exec$1');
+                        updateConfig({ googleAppsScriptUrl: sanitized });
+                      }}
+                      placeholder="https://script.google.com/macros/s/AKfycb.../exec"
                       className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs focus:bg-white focus:border-indigo-600 outline-none"
                     />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Ensure your deployment has <strong>Execute as: &quot;Me&quot;</strong> and <strong>Who has access: &quot;Anyone&quot;</strong>, and the URL ends with <strong>/exec</strong>.
+                    </p>
                   </div>
                 </div>
               </div>

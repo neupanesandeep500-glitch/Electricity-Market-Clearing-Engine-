@@ -1083,15 +1083,27 @@ function createDirectMailTransporter(user, pass, port = 465, secure = true, host
 }
 async function sendViaGoogleAppsScript(scriptUrl, payload) {
   try {
-    const res = await fetch(scriptUrl.trim(), {
+    const cleanUrl = scriptUrl.trim().replace(/\/dev(\?.*)?$/, "/exec$1");
+    const gasPayload = {
+      ...payload,
+      body: payload.body || payload.text || payload.html || "",
+      htmlBody: payload.htmlBody || payload.html || payload.text || ""
+    };
+    const res = await fetch(cleanUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(gasPayload),
       redirect: "follow"
     });
     const text = await res.text();
+    if (text.includes("accounts.google.com") || text.includes("Sign in - Google Accounts") || text.includes("docs.google.com/favicon.ico") || text.includes("servicelogin")) {
+      return {
+        success: false,
+        error: "Google Apps Script requires Google Login. Please deploy it with 'Who has access' set to 'Anyone' (not 'Only myself' or domain-only), and use the /exec deployment URL."
+      };
+    }
     let data = {};
     try {
       data = JSON.parse(text);
@@ -1099,7 +1111,7 @@ async function sendViaGoogleAppsScript(scriptUrl, payload) {
       if (res.ok && (text.includes("success") || text.includes("OK") || text.length === 0)) {
         return { success: true, messageId: `gas-${Date.now()}` };
       }
-      return { success: false, error: `Google Apps Script returned: ${text.slice(0, 150)}` };
+      return { success: false, error: `Google Apps Script returned non-JSON response: ${text.slice(0, 150)}` };
     }
     if (res.ok && data?.success !== false) {
       return { success: true, messageId: data.messageId || `gas-${Date.now()}` };
@@ -1293,21 +1305,63 @@ async function dispatchSingleEmail(job, smtpCredentials, httpApi) {
 app.post(["/api/verify-smtp", "/api/verify-email-provider"], async (req, res) => {
   const { sender, password, httpApiKey, googleAppsScriptUrl, provider } = req.body || {};
   if (provider === "google_script" || googleAppsScriptUrl) {
-    const targetUrl = googleAppsScriptUrl || httpApiKey;
-    if (!targetUrl || !targetUrl.startsWith("http")) {
+    const rawUrl = googleAppsScriptUrl || httpApiKey;
+    if (!rawUrl || !rawUrl.startsWith("http")) {
       return res.json({ success: false, error: "Valid Google Apps Script Web App URL required" });
     }
+    const cleanUrl = rawUrl.trim().replace(/\/dev(\?.*)?$/, "/exec$1");
     try {
-      const pingRes = await fetch(targetUrl.trim(), {
+      const getRes = await fetch(cleanUrl, { redirect: "follow" });
+      const getText = await getRes.text();
+      if (getText.includes("accounts.google.com") || getText.includes("Sign in - Google Accounts") || getText.includes("docs.google.com/favicon.ico") || getText.includes("servicelogin")) {
+        return res.json({
+          success: false,
+          error: "Google Apps Script requires Google Login! In Apps Script, click 'Deploy' -> 'New deployment' -> type: 'Web app' -> set 'Execute as: Me' and 'Who has access: Anyone' (not 'Only myself' or domain-only), and use the /exec deployment URL."
+        });
+      }
+      try {
+        const getData = JSON.parse(getText);
+        if (getData?.success || getData?.message?.toLowerCase().includes("running") || getData?.message?.toLowerCase().includes("relay")) {
+          return res.json({
+            success: true,
+            message: `Google Apps Script Relay verified successfully! (${getData.message || "Ready to send"})`
+          });
+        }
+      } catch {
+      }
+      const pingRes = await fetch(cleanUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "ping" }),
+        body: JSON.stringify({ action: "ping", to: "test@example.com", subject: "Ping Check" }),
         redirect: "follow"
       });
-      if (pingRes.ok) {
-        return res.json({ success: true, message: "Google Apps Script Relay verified successfully! Ready to send via Gmail." });
+      const pingText = await pingRes.text();
+      if (pingText.includes("accounts.google.com") || pingText.includes("Sign in - Google Accounts") || pingText.includes("servicelogin")) {
+        return res.json({
+          success: false,
+          error: "Google Apps Script requires Google Login! Please set 'Who has access' to 'Anyone' in your Apps Script Web App deployment."
+        });
       }
-      return res.json({ success: false, error: `Google Apps Script returned HTTP ${pingRes.status}` });
+      try {
+        const pingData = JSON.parse(pingText);
+        if (pingData?.success || pingData?.message || pingData?.recipient) {
+          return res.json({
+            success: true,
+            message: `Google Apps Script Relay verified successfully! Ready to send via Gmail.`
+          });
+        }
+      } catch {
+      }
+      if (pingRes.ok) {
+        return res.json({
+          success: true,
+          message: "Google Apps Script Relay responded successfully (HTTP 200)! Ready to send via Gmail."
+        });
+      }
+      return res.json({
+        success: false,
+        error: `Google Apps Script returned HTTP ${pingRes.status}: ${pingText.slice(0, 150)}`
+      });
     } catch (err) {
       return res.json({ success: false, error: `Could not reach Google Apps Script URL: ${err.message}` });
     }
