@@ -1,8 +1,0 @@
-{
-  "name": "Nepal Electricity Market Simulation & Clearing Engine",
-  "description": "Real-time electricity market clearing engine with Google Sheets data extraction, Google Form QR code onboarding, optimal nodal pricing calculation, and participant settlement notifications.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}
