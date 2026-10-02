@@ -1,0 +1,37 @@
+services:
+  - type: web
+    name: electricity-market-clearing-engine
+    runtime: node
+    plan: free            # NOTE: free plans block SMTP. Use the Apps Script route below, or switch to `starter` to send via Gmail SMTP.
+    region: singapore
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+
+      # ---- Email (set the secret values in the Render dashboard; they are never stored in git) ----
+      - key: EMAIL_SENDER            # Gmail address that sends the mail
+        sync: false
+      - key: EMAIL_APP_PASSWORD      # 16-letter Google App Password
+        sync: false
+      - key: EMAIL_FROM_NAME
+        value: Nepal Electricity Market Clearing Engine
+      - key: EMAIL_REPLY_TO          # optional
+        sync: false
+      # Email passcode is OFF. To turn it on, add ENABLE_ADMIN_PASSCODE=true and ADMIN_PASSCODE=<secret>.
+      # Free-plan route (HTTPS, sends from your Gmail via Google Apps Script). See apps-script/Code.gs
+      - key: GOOGLE_APPS_SCRIPT_URL
+        sync: false
+      - key: GAS_SHARED_SECRET
+        sync: false
+
+      - key: VITE_GOOGLE_SHEET_ID
+        value: 17xtp2EWVr8HhWVp9R9137AauNQv0V6DV5RPPdTEZ5Tg
+      - key: VITE_GOOGLE_SHEET_NAME
+        value: Form Responses 1
+      - key: VITE_GOOGLE_FORM_URL
+        value: https://docs.google.com/forms/d/1pnNFvIy_I10zvgq8Bv8zqqCHh9zS9EeNmUMldGiDdZk/viewform
